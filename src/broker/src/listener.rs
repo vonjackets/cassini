@@ -1,10 +1,11 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, net::{tcp::OwnedReadHalf, TcpListener}, sync::Mutex};
 use tracing::{debug, error, info, warn};
-use crate::{broker::Broker, session::{SessionManager, SessionManagerMessage}, topic::{TopicManager, TopicManagerArgs}, BrokerMessage};
+use tracing_subscriber::field::debug;
+use crate::{broker::Broker, session::{self, SessionManager, SessionManagerMessage}, topic::{TopicManager, TopicManagerArgs}, BrokerMessage};
 use std::{ collections::HashMap, sync::Arc};
 
 
-use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{message, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
@@ -71,7 +72,8 @@ impl Actor for ListenerManager {
                             writer: Arc::new(Mutex::new(writer)),
                             reader: Some(reader),
                             supervisor: mgr_ref,
-                            client_id: client_id.clone()
+                            client_id: client_id.clone(),
+                            registration_id: None
                         };
 
                         
@@ -128,11 +130,16 @@ impl Actor for ListenerManager {
                     //TODO: Send error message
                 } else {
                     state.listeners.insert(client_id.clone(), listener_ref.clone());
-                    info!("ListenerManager: Registered Listener for client ID {}", client_id);
 
                     let broker_ref = myself.try_get_supervisor().expect("Failed to get ref to listenerManager supervisor");
                     broker_ref.send_message(BrokerMessage::RegistrationRequest { client_id: client_id }).expect("Failed to forward registration request to broker");
                 }
+            },
+            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
+                //forwward registration_id back to listener to signal success
+                debug!("Forwarding registration ack to listener: {client_id}");
+                where_is(client_id.clone()).unwrap().send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success, error }).expect("Failed to forward message to client: {client_id}");
+                
             },
             BrokerMessage::DisconnectRequest { registration_id, client_id } => {
                 info!("received disconnect request for session: {registration_id}");
@@ -160,6 +167,7 @@ struct ListenerState {
     reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
     supervisor: ActorRef<BrokerMessage>,
     client_id: String,
+    registration_id: Option<String>,
 }
 //TDOD: Establish why we use this vs passing a state obj?
 struct ListenerArguments {
@@ -167,6 +175,7 @@ struct ListenerArguments {
     reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
     supervisor: ActorRef<BrokerMessage>,
     client_id: String,
+    registration_id: Option<String>,
 }
 impl Listener {
 
@@ -194,7 +203,8 @@ impl Actor for Listener {
             writer: args.writer,
             reader: args.reader,
             supervisor: args.supervisor,
-            client_id: args.client_id.clone()
+            client_id: args.client_id.clone(),
+            registration_id: args.registration_id
         };
         info!("Listener: Listener started for client_id: {}", state.client_id.clone());
 
@@ -243,6 +253,7 @@ impl Actor for Listener {
         match message {
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 debug!("Received registration ack from manager!");
+                state.registration_id = Some(registration_id);
             },
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 info!("Successfully published message to topic: {topic}");
@@ -261,9 +272,14 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), serialized, Arc::clone(&state.writer)).await;
 
             },
-            BrokerMessage::SubscribeRequest { registration_id, topic } => {
-               //TODO: Forward message to session
-               
+            BrokerMessage::SubscribeRequest {topic, .. } => {
+                //Got request to subscribe from client, confirm we've been registered
+                match &state.registration_id {
+                    Some(registration_id) => {
+                        //forward to session
+                        where_is(registration_id.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.to_owned()), topic}).expect("Failed to forward subscribe request to session {registration_id}");
+                    }, None => todo!("Unregistered listener trying to subscribe to topic {topic}, Send 403 type error to client")
+                }
                
             }
             BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {

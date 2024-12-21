@@ -39,8 +39,9 @@ pub enum BrokerMessage {
         result: Result<(), String>, // Ok for success, Err with error message
     },
     /// Subscribe request from the client.
+    // This request originates externally, so a registration_id is not added until it is received by the session
     SubscribeRequest {
-        registration_id: String,
+        registration_id: Option<String>,
         topic: String,
     },
     /// Subscribe acknowledgment to the client.

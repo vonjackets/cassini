@@ -2,6 +2,7 @@ use std::{clone, collections::HashMap};
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{info, warn, Subscriber};
+use tracing_subscriber::field::debug;
 
 use crate::{broker::Broker, session::{self, SessionAgentArgs}, BrokerMessage};
 
@@ -49,27 +50,32 @@ impl Actor for SubscriberManager {
         match message {
             BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                if state.subscribers.contains_key(&registration_id) {
-                    warn!("Session agent {registration_id} already subscribed to topic {topic}");
-                } else {
-                    //TODO: determine naming convention for subscriber agents?
-                    // session_id:topic?
-                    let agent_name = String::from(registration_id.clone() + ":" + &topic);
-                    let args = SubscriberAgentArgs {
-                        registration_id: registration_id.clone(),
-                        session_agent_ref: state.subscribers.get(&registration_id).unwrap().clone()
-                    };
-                    let (subscriber_ref, _) = Actor::spawn_linked(Some(agent_name), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {agent_name}");
-
-                    state.subscribers.insert(registration_id.clone(), subscriber_ref.clone());
-
-                    //send ack to session
-
-                    let session_agent_ref = where_is(registration_id.clone()).unwrap();
-                    session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) });
+                match registration_id {
+                    Some(registration_id) => {
+                        if state.subscribers.contains_key(&registration_id) {
+                            warn!("Session agent {registration_id} already subscribed to topic {topic}");
+                        } else {
+                            //TODO: determine naming convention for subscriber agents?
+                            // session_id:topic?
+                            let agent_name = String::from(registration_id.clone() + ":" + &topic);
+                            let args = SubscriberAgentArgs {
+                                registration_id: registration_id.clone(),
+                                session_agent_ref: state.subscribers.get(&registration_id).unwrap().clone()
+                            };
+                            let (subscriber_ref, _) = Actor::spawn_linked(Some(agent_name), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {agent_name}");
+        
+                            state.subscribers.insert(registration_id.clone(), subscriber_ref.clone());
+        
+                            //send ack to session
+        
+                            let session_agent_ref = where_is(registration_id.clone()).unwrap();
+                            session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) });
+                        }                        
+                    }, 
+                    None => {
+                        todo!("Error message!")
+                    }
                 }
-                
-                
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 let id = registration_id.clone();
@@ -137,23 +143,18 @@ impl Actor for SubscriberAgent {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
         match message {
-            BrokerMessage::PublishResponse { topic, payload, result } => {
-                //TODO: Subscriber was notified there was a new message published on the subscribed topic, forward payload to session
-                todo!()
+            BrokerMessage::PublishResponse { topic, payload, result } => {                
+                let id = state.registration_id.clone();
+                tracing::debug!("Received notification of message on topic: {topic}, forwarding to session: {id}");
+                state.session_agent_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("Failed to forward message to session");
+                //TODO: It's a goal to support resiliency. If we fail to talk to the session for some reason, but aren't told to discard the subscription,
+                // How can we ensure a user who get's disconnected temporarily doesn't lose this subscription?
+                //TODO: Store dead letter queue here in case of failure to send to session?
             },
-            BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                
-            },
-            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
-                //forward to session
-                if let Some(session_ref) = where_is(registration_id.clone()) {
-                    session_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id, topic: topic, result: result }).unwrap();
-                } else {
-                    warn!("Failed to forward acknowledgement to session!");
-                }
-            }
-            BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
-
+            BrokerMessage::UnsubscribeRequest { .. } => {
+                //This agent uis no longer needed, it should die with honor
+                info!("Stopping {myself:?}");
+                myself.kill();
             },
             _ => todo!()
 

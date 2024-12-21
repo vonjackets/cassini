@@ -1,7 +1,7 @@
-use tracing::{info, warn};
+use tracing::{info, subscriber, warn};
 use uuid::Uuid;
 use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs, SessionManagerMessage}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{self, TopicManager, TopicManagerArgs}, BrokerMessage};
-use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -13,7 +13,8 @@ pub struct Broker;
 pub struct BrokerState {
     listener: ActorRef<BrokerMessage>,
     topic_manager: ActorRef<BrokerMessage>,
-    session_manager: ActorRef<BrokerMessage>
+    session_manager: ActorRef<BrokerMessage>,
+    subscriber_manager:ActorRef<BrokerMessage>,
 }
 
 #[async_trait]
@@ -59,7 +60,8 @@ impl Actor for Broker {
         let state = BrokerState {
             listener: listener_manager.clone(),
             topic_manager: topic_manager.clone(),
-            session_manager: session_mgr.clone()
+            session_manager: session_mgr.clone(),
+            subscriber_manager: subscriber_mgr.clone()
         };
 
         Ok(state)
@@ -132,14 +134,22 @@ impl Actor for Broker {
                
 
             },
+            BrokerMessage::SubscribeRequest { registration_id, topic } => {
+                //forward to subscriber and topic manager to ensure logic is followed
+                state.subscriber_manager.send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
+                state.topic_manager.send_message(BrokerMessage::SubscribeRequest { registration_id, topic }).expect("Failed to forward subscribeRequest to topic manager");
+            },
+            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
+                info!("Received successful subscribe ack for session: {registration_id}");
+                where_is(registration_id.clone()).unwrap().send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward message to session: {registration_id}");
+            },
             BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
             BrokerMessage::PongMessage { registration_id } => todo!(),
             BrokerMessage::TimeoutMessage { registration_id } => {
                 warn!("Received timeout for registration ID: {registration_id}");                
-                // Perform timeout-related cleanup or actions
-                // state.session_manager.send_message(SessionManagerMessage::DisconnectRequest(BrokerMessage::DisconnectRequest{ registration_id })).expect("Failed to notify session manager of disconnect");
-
+                //tell listener mgr to handle business
+                state.listener.send_message(BrokerMessage::TimeoutMessage { registration_id }).expect("Failed to forward timeout message to listener manager");
             }
             _ => todo!()
         }

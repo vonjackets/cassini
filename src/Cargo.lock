@@ -118,7 +118,9 @@ checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
 name = "cassini-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "common",
+ "ractor",
  "serde",
  "serde_json",
  "tokio",

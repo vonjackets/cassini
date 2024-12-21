@@ -90,29 +90,35 @@ impl Actor for TopicManager {
         match message {
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                  //forward request to topic agent
-                 if let Some(agentRef) = state.topics.get(&client_id.clone()) {
-                    agentRef.send_message(BrokerMessage::PublishRequest { client_id, topic , payload});
+                 if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
+                    agentRef.send_message(BrokerMessage::PublishRequest { registration_id, topic , payload});
                 } else {
                     warn!("No agent set to handle topic: {topic}");
                     //TODO: Spin up new topic agent?
-                    let client = where_is(client_id.clone()).expect("Could not get agentref by id {client_id}");
-                    client.send_message(BrokerMessage::SubscribeAcknowledgment { client_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
+                    let session = where_is(registration_id.clone()).expect("Could not get agentref by id {client_id}");
+                    session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
                     .expect("Failed to send subscribe ack to client {client_id}");
                 }
             },
-            BrokerMessage::SubscribeRequest { client_id, topic } => {
-                //forward request to topic agent
-                if let Some(agentRef) = state.topics.get(&client_id.clone()) {
-                    agentRef.send_message(BrokerMessage::SubscribeRequest { client_id, topic });
-                } else {
-                    warn!("No agent set to handle topic: {topic}");
-                    //TODO: Spin up new topic agent?
-                    let client = where_is(client_id.clone()).expect("Could not get agentref by id {client_id}");
-                    client.send_message(BrokerMessage::SubscribeAcknowledgment { client_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
-                    .expect("Failed to send subscribe ack to client {client_id}");
+            BrokerMessage::SubscribeRequest { registration_id, topic } => {
+                match registration_id {
+                    Some(registration_id) => {
+                                        //check topic exists, validate whether an agent to handle that queue already exists
+                        if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
+                            agentRef.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.clone()), topic });
+                        } else {
+                            warn!("No agent set to handle topic: {topic}");
+                            //TODO: Spin up new topic agent?
+                            let client = where_is(registration_id.clone()).expect("Could not get agentref by id {client_id}");
+                            client.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id:registration_id.clone(), topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
+                            .expect("Failed to send subscribe ack to client {client_id}");
+                        }
+                    }, None => {
+                        todo!()
+                    }
                 }
             }
-            BrokerMessage::UnsubscribeRequest { client_id, topic } => todo!(),
+            BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
             _ => todo!()
         }
         Ok(())
@@ -167,9 +173,14 @@ impl Actor for TopicAgent {
 
         match message {
             BrokerMessage::SubscribeRequest{registration_id,topic}=>{
-            info!("Adding subscriber {} to topic {topic}",registration_id);
-            let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(registration_id.clone()).unwrap();
-            state.subscribers.insert(registration_id.clone(),client_ref.clone());
+                match registration_id {
+                    Some(id) => {
+                        info!("Adding subscriber {id} to topic {topic}");
+                        let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(id.clone()).unwrap();
+                        state.subscribers.insert(id.clone(),client_ref.clone());
+                    },
+                    None => todo!("send error message"),
+                }
         
             },
             BrokerMessage::PublishRequest{registration_id,topic,payload}=>{
@@ -183,7 +194,7 @@ impl Actor for TopicAgent {
                 }
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
-            BrokerMessage::ErrorMessage { registration_id, error } => todo!(), 
+            BrokerMessage::ErrorMessage { client_id, error } => todo!(), 
             _ => {
                 todo!()
             }

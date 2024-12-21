@@ -2,6 +2,7 @@ use std::{borrow::Borrow, collections::HashMap, pin, time::Duration};
 
 use ractor::{async_trait, message, registry::where_is, time::send_interval, Actor, ActorProcessingErr, ActorRef, Message, RpcReplyPort};
 use tracing::{debug, info, warn};
+use tracing_subscriber::field::debug;
 
 use crate::{broker::{self, Broker}, BrokerMessage, TimeoutMessage};
 
@@ -26,14 +27,11 @@ pub enum SessionManagerMessage {
 /// Define the state for the actor
 pub struct SessionManagerState {
     sessions: HashMap<String, Session>,           // Map of registration_id to Session ActorRefesses
-    // subscriber_manager_ActorRef: Option<ActorRef<>,
     topic_mgr_ref: Option<ActorRef<BrokerMessage>>,
-    listener_mgr_ref: Option<ActorRef<BrokerMessage>>,
     broker_ref: Option<ActorRef<BrokerMessage>>,
 }
 
 pub struct SessionManagerArgs {
-    // subscriber_manager_ActorRef: Option<ActorRef<>,
     pub topic_mgr_ref: Option<ActorRef<BrokerMessage>>,
     pub listener_mgr_ref: Option<ActorRef<BrokerMessage>>,
     pub broker_ref: Option<ActorRef<BrokerMessage>>,
@@ -68,8 +66,7 @@ impl Actor for SessionManager {
         let state = SessionManagerState {
             sessions: HashMap::new(), 
             topic_mgr_ref: args.topic_mgr_ref, 
-            listener_mgr_ref: args.listener_mgr_ref, 
-            broker_ref: args.broker_ref 
+            broker_ref: args.broker_ref ,
         };
 
         Ok(state)
@@ -87,17 +84,16 @@ impl Actor for SessionManager {
                 info!("SessionManager: Successfully registered client with registration ID {}", registration_id);
                 
                 if let Some(broker_ref) = myself.try_get_supervisor() {
-                    if let Some(listener_mgr_ref) = &state.listener_mgr_ref {
+
                     let listener_ref = where_is(client_id.clone()).expect("Couldn't find listenerAgent with id {client_id}");
-                    //TODO: uncomment when sessionAgent is done
-                    let args = SessionAgentArgs { registration_id: registration_id.clone(), client_ref: listener_ref.into() };
+                    let args = SessionAgentArgs { registration_id: registration_id.clone(), client_ref: listener_ref.into() , broker: broker_ref.into()};
                         
                     let (session_agent, _) = Actor::spawn_linked(Some(registration_id.clone()), SessionAgent, args, myself.clone().into()).await.expect("Couldn't start session agent!");
                     state.sessions.insert(registration_id.clone(), Session {
                         agent_ref: session_agent,
                         ping_count: 0
                     });
-                    }
+
                 }
             
             }
@@ -126,14 +122,14 @@ pub struct SessionAgent;
 pub struct SessionAgentArgs {
     pub registration_id: String,
     pub client_ref: ActorRef<BrokerMessage>,
-    // subscriber_manager_addr.clone(), //ref to subscriber mgr
+    pub broker: ActorRef<BrokerMessage>
 }
 pub struct SessionAgentState {
     ///registration_id, mostly a refrence to the agent's actual name in the registry
     pub registration_id: String, 
     ///id of session to connect to
     pub client_ref: ActorRef<BrokerMessage>, 
-    // subscriber_manager_addr: Addr<SubscriberManager>,
+    pub broker: ActorRef<BrokerMessage>
 }
 
 #[async_trait]
@@ -149,7 +145,7 @@ impl Actor for SessionAgent {
     ) -> Result<Self::State, ActorProcessingErr> {
         info!("{myself:?} starting");
         //parse args. if any
-        let state = SessionAgentState { registration_id: args.registration_id, client_ref: args.client_ref.clone()};
+        let state = SessionAgentState { registration_id: args.registration_id, client_ref: args.client_ref.clone(), broker: args.broker};
 
         Ok(state)
     }
@@ -192,10 +188,16 @@ impl Actor for SessionAgent {
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => todo!(),
             BrokerMessage::PublishRequest { registration_id, topic, payload } => todo!(),
             BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
-            BrokerMessage::SubscribeRequest { registration_id, topic } => todo!(),
-
+            BrokerMessage::SubscribeRequest { registration_id, topic } => {
+                debug!("forwarding susbcribe request for {myself:?}");
+                state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
+            },
+            
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
-            BrokerMessage::PingMessage { registration_id } => todo!(),
+            BrokerMessage::PingMessage { registration_id } => {
+                //forward to broker
+                
+            },
             BrokerMessage::PongMessage { registration_id } => {
                 if registration_id == state.registration_id {
                     debug!("Received pong from broker for session {}", state.registration_id);
