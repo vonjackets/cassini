@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, hash::Hash};
 
-use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, info, warn};
 
 use crate::BrokerMessage;
@@ -16,14 +16,9 @@ pub struct TopicManagerState {
 pub struct  TopicManagerArgs {
     pub topics: Option<Vec<String>>
 }
-pub enum TopicManagerMessage {
-    AddTopic(String),
-    RemoveTopic(String)
-
-}
 
 impl TopicManager {
-    pub async fn add_topic(topic: String, topics: &mut HashMap<String, ActorRef<BrokerMessage>>, supervisor: ActorRef<TopicManagerMessage>) {
+    pub async fn add_topic(topic: String, topics: &mut HashMap<String, ActorRef<BrokerMessage>>, supervisor: ActorRef<BrokerMessage>) {
         info!("Creating new topic: {}", topic);
         //spawn new topic agent to handle it
         let agent_name = String::from(topic.clone() + "_agent");
@@ -36,7 +31,7 @@ impl TopicManager {
 #[async_trait]
 impl Actor for TopicManager {
     #[doc = " The message type for this actor"]
-    type Msg = TopicManagerMessage;
+    type Msg = BrokerMessage;
 
     #[doc = " The type of state this actor manages internally"]
     type State = TopicManagerState;
@@ -93,8 +88,32 @@ impl Actor for TopicManager {
     ) -> Result<(), ActorProcessingErr> {
 
         match message {
-            TopicManagerMessage::AddTopic(_) => todo!(),
-            TopicManagerMessage::RemoveTopic(_) => todo!(),
+            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+                 //forward request to topic agent
+                 if let Some(agentRef) = state.topics.get(&client_id.clone()) {
+                    agentRef.send_message(BrokerMessage::PublishRequest { client_id, topic , payload});
+                } else {
+                    warn!("No agent set to handle topic: {topic}");
+                    //TODO: Spin up new topic agent?
+                    let client = where_is(client_id.clone()).expect("Could not get agentref by id {client_id}");
+                    client.send_message(BrokerMessage::SubscribeAcknowledgment { client_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
+                    .expect("Failed to send subscribe ack to client {client_id}");
+                }
+            },
+            BrokerMessage::SubscribeRequest { client_id, topic } => {
+                //forward request to topic agent
+                if let Some(agentRef) = state.topics.get(&client_id.clone()) {
+                    agentRef.send_message(BrokerMessage::SubscribeRequest { client_id, topic });
+                } else {
+                    warn!("No agent set to handle topic: {topic}");
+                    //TODO: Spin up new topic agent?
+                    let client = where_is(client_id.clone()).expect("Could not get agentref by id {client_id}");
+                    client.send_message(BrokerMessage::SubscribeAcknowledgment { client_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
+                    .expect("Failed to send subscribe ack to client {client_id}");
+                }
+            }
+            BrokerMessage::UnsubscribeRequest { client_id, topic } => todo!(),
+            _ => todo!()
         }
         Ok(())
     }
@@ -147,24 +166,24 @@ impl Actor for TopicAgent {
     ) -> Result<(), ActorProcessingErr> {
 
         match message {
-            BrokerMessage::SubscribeRequest{client_id,topic}=>{
-            info!("Adding subscriber {} to topic {}",client_id,state.topic.clone());
-            let client_ref:ActorRef<BrokerMessage> =ActorRef::where_is(client_id.clone()).unwrap();
-            state.subscribers.insert(client_id.clone(),client_ref.clone());
+            BrokerMessage::SubscribeRequest{registration_id,topic}=>{
+            info!("Adding subscriber {} to topic {topic}",registration_id);
+            let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(registration_id.clone()).unwrap();
+            state.subscribers.insert(registration_id.clone(),client_ref.clone());
         
             },
-            BrokerMessage::PublishRequest{client_id,topic,payload}=>{
-                info!(" {myself:?} Recevied message from {0}: {1}",client_id,payload);
+            BrokerMessage::PublishRequest{registration_id,topic,payload}=>{
+                info!(" {myself:?} Recevied message from {0}: {1}",registration_id,payload);
                 state.queue.push_back(payload.clone());info!("{myself:?} notifying subscribers");
-                for (client_id,listener)in &state.subscribers{ 
+                for (registration_id,listener)in &state.subscribers{ 
                     
                     let msg = BrokerMessage::PublishResponse{ topic: state.topic.clone(), payload: payload.clone(), result:Result::Ok(()) };
                     
-                    debug!("Sending message to {client_id}:{listener:?}");listener.send_message(msg).unwrap();
+                    debug!("Sending message to {registration_id}:{listener:?}");listener.send_message(msg).unwrap();
                 }
             },
-            BrokerMessage::UnsubscribeRequest { client_id, topic } => todo!(),
-            BrokerMessage::ErrorMessage { client_id, error } => todo!(), 
+            BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
+            BrokerMessage::ErrorMessage { registration_id, error } => todo!(), 
             _ => {
                 todo!()
             }

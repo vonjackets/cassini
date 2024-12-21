@@ -1,5 +1,6 @@
 use tracing::{info, warn};
-use crate::{listener::ListenerManager, topic::{TopicManager, TopicManagerArgs}, BrokerMessage};
+use uuid::Uuid;
+use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs, SessionManagerMessage}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{self, TopicManager, TopicManagerArgs}, BrokerMessage};
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
@@ -11,6 +12,8 @@ pub struct Broker;
 #[derive(Clone)]
 pub struct BrokerState {
     listener: ActorRef<BrokerMessage>,
+    topic_manager: ActorRef<BrokerMessage>,
+    session_manager: ActorRef<BrokerMessage>
 }
 
 #[async_trait]
@@ -25,20 +28,40 @@ impl Actor for Broker {
         _: (),
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("Broker: Started {myself:?}");
-        //start listener maanger to listen for incoming connections
+        //start listener manager to listen for incoming connections
         
-        let (listener_manager, handle) = Actor::spawn_linked(Some("listenerManager".to_owned()), ListenerManager, (), myself.clone().into()).await.expect("couldn't start listener manager");
-        let state = BrokerState {
-            listener: listener_manager.clone()
+        let listener_mgr_args = ListenerManagerArgs {
+            broker_ref: Some(myself.clone())
         };
+
+        let (listener_manager, handle) = Actor::spawn_linked(Some("listenerManager".to_owned()), ListenerManager, listener_mgr_args, myself.clone().into()).await.expect("couldn't start listener manager");
+        
 
         
         //handle.await.expect("Something happened");
         //TODO: read these from configuration
-        let args = TopicManagerArgs {topics: None};
+        let topic_mgr_args = TopicManagerArgs {topics: None};
         // start topic manager
-        let (topic_manager, topic_mgr_handle) = Actor::spawn_linked(Some("topicManager".to_owned()), TopicManager, args, myself.clone().into()).await.expect("Could not start topic manager agent");
+        let (topic_manager, topic_mgr_handle) = Actor::spawn_linked(Some("topicManager".to_owned()), TopicManager, topic_mgr_args, myself.clone().into()).await.expect("Could not start topic manager agent");
         topic_mgr_handle.await.expect("something happened with the topic manager");
+
+        let session_mgr_args = SessionManagerArgs {
+            topic_mgr_ref: Some(topic_manager.clone()),
+            listener_mgr_ref: Some(listener_manager.clone()),
+            broker_ref: Some(myself.clone())
+        };
+
+        let (session_mgr, _) = Actor::spawn_linked(Some("sessionManager".to_string()), SessionManager, session_mgr_args, myself.clone().into()).await.expect("");
+
+        let subscriber_mgr_args = SubscriberManagerArgs { topic_mgr_ref: topic_manager.clone(), session_manager_ref: session_mgr.clone() };
+
+        let (subscriber_mgr, _) = Actor::spawn_linked(Some("subscriberManager".to_string()), SubscriberManager, subscriber_mgr_args, myself.clone().into()).await.expect("Failed to start subscriber manager");
+        let state = BrokerState {
+            listener: listener_manager.clone(),
+            topic_manager: topic_manager.clone(),
+            session_manager: session_mgr.clone()
+        };
+
         Ok(state)
     }
 
@@ -76,7 +99,50 @@ impl Actor for Broker {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         //TODO: Implement? The master node seems purely responsible for managing actor lifecycles, doesn't really do any message brokering on its own
-        todo!();
+        match message {
+            BrokerMessage::RegistrationRequest { client_id } => {
+                //The listenerManager forwarded the request, generate a new ID to serve as their identifier for internal purposes
+                //TODO: Is there any reason we'd fail at this point? User can authenticate but isn't authroized?
+               
+                // Generate a new registration ID
+                let registration_id = Uuid::new_v4().to_string();
+                
+                info!("Registering client {} with registration ID {}", client_id, registration_id);
+                //TODO: anything to do here state-wise?
+
+                // Send RegistrationResponse to SessionManager and ListenerManager to signal success
+                state.session_manager
+                .send_message(BrokerMessage::RegistrationResponse {
+                    registration_id: registration_id.clone(),
+                    client_id: client_id.clone(),
+                    success: true, 
+                    error: None 
+                })
+                .expect("Failed to forward registration response to session manager");
+                state.listener
+                .send_message(BrokerMessage::RegistrationResponse {
+                    registration_id: registration_id.clone(),
+                    client_id: client_id.clone(),
+                    success: true, 
+                    error: None 
+                })
+                .expect("Failed to forward registration response to listener manager");
+
+                
+               
+
+            },
+            BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
+            BrokerMessage::ErrorMessage { client_id, error } => todo!(),
+            BrokerMessage::PongMessage { registration_id } => todo!(),
+            BrokerMessage::TimeoutMessage { registration_id } => {
+                warn!("Received timeout for registration ID: {registration_id}");                
+                // Perform timeout-related cleanup or actions
+                // state.session_manager.send_message(SessionManagerMessage::DisconnectRequest(BrokerMessage::DisconnectRequest{ registration_id })).expect("Failed to notify session manager of disconnect");
+
+            }
+            _ => todo!()
+        }
         Ok(())
     }
 }   

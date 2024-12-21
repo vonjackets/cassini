@@ -1,10 +1,10 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, net::{tcp::OwnedReadHalf, TcpListener}, sync::Mutex};
 use tracing::{debug, error, info, warn};
-use crate::{topic::{TopicManager, TopicManagerArgs}, BrokerMessage};
+use crate::{broker::Broker, session::{SessionManager, SessionManagerMessage}, topic::{TopicManager, TopicManagerArgs}, BrokerMessage};
 use std::{ collections::HashMap, sync::Arc};
 
 
-use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
@@ -15,25 +15,29 @@ use serde::{Deserialize, Serialize};
 /// 
 pub struct ListenerManager;
 pub struct ListenerManagerState {
-    listeners: HashMap<String, ActorRef<BrokerMessage>>,
+    listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
     broker_ref: Option<ActorRef<BrokerMessage>>
 }
 
+pub struct ListenerManagerArgs {
+    pub broker_ref:  Option<ActorRef<BrokerMessage>>
+    ////TODO: Get bind_addr from config and pass in here?
+}
 #[async_trait]
 impl Actor for ListenerManager {
     type Msg = BrokerMessage;
     type State = ListenerManagerState;
-    type Arguments = ();
+    type Arguments = ListenerManagerArgs;
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: (),
+        args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Started {myself:?}");
         
         //set up state object
-        let state = ListenerManagerState { listeners: HashMap::new(), broker_ref: None};
+        let state = ListenerManagerState { listeners: HashMap::new(), broker_ref: args.broker_ref};
         info!("ListenerManager: Agent starting");
         Ok(state)
     }
@@ -41,7 +45,7 @@ impl Actor for ListenerManager {
     /// So as to not block the initialization, once a the manager is running as a process, start the server
     /// and listen for incoming connections
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-        let bind_addr = "127.0.0.1:8080";
+        let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
         let server = TcpListener::bind(bind_addr).await.expect("could not start tcp listener");
         
         info!("ListenerManager: Server running on {}", bind_addr);
@@ -53,8 +57,9 @@ impl Actor for ListenerManager {
                     Ok((stream,_))=> {
                         // Generate a unique client ID
                         let client_id = uuid::Uuid::new_v4().to_string();
-
-                        // give listener actor reference ot the manager
+                        
+                        //TODO: remove in favor of using try_get_supervisor
+                        //give listener actor reference ot the manager
                         let mgr_ref = myself.clone();
 
                         // Create and start a new Listener actor for this connection
@@ -71,11 +76,10 @@ impl Actor for ListenerManager {
 
                         
                         //start listener actor to handle connection
-                        let (listener_ref, _) = Actor::spawn_linked(Some(client_id.clone()), Listener, listener_args, myself.clone().into()).await.expect("Failed to start listener for new connection");
-                        //TOOD: state can't be manipulated in this thread in its current form:
-                        // borrowed data escapes outside of method `state` escapes the method body here
-                        // should we update it on new connection? or when a listener actually get's registered?
-                        // state.listeners.insert(client_id.clone(), listener_ref.clone());
+                        let _ = Actor::spawn_linked(Some(client_id.clone()), Listener, listener_args, myself.clone().into()).await.expect("Failed to start listener for new connection");
+                        //state can't be manipulated in this thread, send request to self to finish registration
+                        myself.send_message(BrokerMessage::RegistrationRequest { client_id: client_id.clone() }).expect("Failed to send self a Registration Request for new conn");
+                        debug!("forwarded registration request to broker");
 
                     },
                     Err(_) => todo!()
@@ -107,12 +111,13 @@ impl Actor for ListenerManager {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationRequest { client_id } => {
+                //Finish registration flow here
                 let client_id = client_id.clone();
                 let listener_ref: ActorRef<BrokerMessage> = ActorRef::where_is(client_id.clone()).unwrap();
 
@@ -120,24 +125,21 @@ impl Actor for ListenerManager {
                 //TODO: Ask the session manager for this information by forwarding the request to it
                 if state.listeners.contains_key(&client_id.clone()) {
                     warn!("ListenerManager: Listener already exists for client ID {}", client_id);
-                    listener_ref.send_message(BrokerMessage::RegistrationResponse { client_id: client_id.clone(), success: false, error: Some("Agent already registered".to_owned()) }).expect("failed to send registration ack");
+                    //TODO: Send error message
                 } else {
                     state.listeners.insert(client_id.clone(), listener_ref.clone());
                     info!("ListenerManager: Registered Listener for client ID {}", client_id);
 
-                    // //notify broker a new listener was added
-                    // if let Some(broker_ref) = state.broker_ref {
-                    //     broker_ref.call(BrokerMessage::NotifyOfNewListener(NewListenerMsg {
-                    //         client_id : client_id,
-                    //         listener_ref : listener_ref.clone()
-                    //     }), Some(Duration::from_millis(100)));
-                    //     info!("ListenerManager: Sent RegistrationRequest to Broker for client ID {}", client_id);
-                    // }
-                    
-                    //send ack
-                    listener_ref.send_message(BrokerMessage::RegistrationResponse { client_id: client_id.clone(), success: true, error: None }).expect("failed to send registration ack");
+                    let broker_ref = myself.try_get_supervisor().expect("Failed to get ref to listenerManager supervisor");
+                    broker_ref.send_message(BrokerMessage::RegistrationRequest { client_id: client_id }).expect("Failed to forward registration request to broker");
                 }
             },
+            BrokerMessage::DisconnectRequest { registration_id, client_id } => {
+                info!("received disconnect request for session: {registration_id}");
+                //kill
+                let listener_ref = state.listeners.get(&client_id).expect("Failed to find listener agent by id {client_id}");
+                listener_ref.kill();
+            }
             _ => {
                 todo!()
             }
@@ -201,16 +203,7 @@ impl Actor for Listener {
 
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         let id= state.client_id.clone();
-        //attempt to register listener with the listener manager
-        
-        let registration_request_msg = BrokerMessage::RegistrationRequest {  client_id: id.clone()  };
-        
-        //send it to the manager for it to handle
-        state.supervisor.send_message(registration_request_msg).expect("Failed to send message to listener manager");
-
         let reader = tokio::io::BufReader::new(state.reader.take().expect("Reader already taken!"));
-        //let writer = Arc::clone(&state.writer);
-
         
         //start listening
         let _ = tokio::spawn(async move {
@@ -219,7 +212,7 @@ impl Actor for Listener {
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Ok(msg) = serde_json::from_str::<BrokerMessage>(&line) {
                     //Not sure if this is conventional, just pipe the message to the handler
-                    myself.send_message(msg).unwrap();
+                    myself.send_message(msg).expect("Could not forward message to {myself:?}");
                     
                 } else {
                     //bad data
@@ -228,10 +221,19 @@ impl Actor for Listener {
                 }
             }
 
+
+            // Handle client disconnection
+            
+
         });
         Ok(())
     }
 
+    async fn post_stop(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+
+        debug!("Successfully stopped {myself:?}");
+        Ok(())
+    }
     async fn handle(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -239,7 +241,7 @@ impl Actor for Listener {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            BrokerMessage::RegistrationResponse { client_id, success, error } => {
+            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 debug!("Received registration ack from manager!");
             },
             BrokerMessage::PublishResponse { topic, payload, result } => {
@@ -249,22 +251,32 @@ impl Actor for Listener {
                 Listener::write(state.client_id.clone(), serialized, Arc::clone(&state.writer)).await;            
             },
 
-            BrokerMessage::SubscribeAcknowledgment { client_id, topic, result } => {
+            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
                 debug!("Agent successfully subscribed to topic: {topic}");
                 let response = BrokerMessage::SubscribeAcknowledgment {
-                    client_id: client_id.clone(), topic, result: Result::Ok(())
+                    registration_id: registration_id.clone(), topic, result: Result::Ok(())
                 };
                 //forward to client
                 let serialized = serde_json::to_string(&response).unwrap();
-                Listener::write(client_id.clone(), serialized, Arc::clone(&state.writer)).await;
+                Listener::write(registration_id.clone(), serialized, Arc::clone(&state.writer)).await;
 
             },
-            BrokerMessage::UnsubscribeRequest { client_id, topic } => todo!(),
-            BrokerMessage::UnsubscribeAcknowledgment { client_id, topic, result } => todo!(),
-            BrokerMessage::DisconnectRequest { client_id } => todo!(),
+            BrokerMessage::SubscribeRequest { registration_id, topic } => {
+               //TODO: Forward message to session
+               
+               
+            }
+            BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
+                debug!("Agent successfully unsubscribed from topic: {topic}");
+                let response = BrokerMessage::UnsubscribeAcknowledgment {
+                    registration_id: registration_id.clone(), topic, result: Result::Ok(())
+                };
+                //forward to client
+                let serialized = serde_json::to_string(&response).unwrap();
+                Listener::write(registration_id.clone(), serialized, Arc::clone(&state.writer)).await;
+            },
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
-            BrokerMessage::PingMessage { client_id } => todo!(),
-            BrokerMessage::PongMessage { client_id } => todo!(),
+
             _ => {
                 todo!()
             }

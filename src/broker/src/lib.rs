@@ -1,11 +1,11 @@
 
-use ractor::ActorRef;
+use ractor::{ActorId, ActorName, ActorRef};
 use serde::{Deserialize, Serialize};
-use topic::TopicManagerMessage;
 pub mod topic;
 pub mod listener;
 pub mod broker;
-
+pub mod session;
+pub mod subscriber;
 //TODO: Standardize logging messages 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
 
@@ -17,17 +17,18 @@ pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
 pub enum BrokerMessage {
     /// Registration request from the client.
     RegistrationRequest {
-        client_id: String,
+        client_id: String, //Id for a new, potentially unauthenticated/unauthorized client client
     },
-    /// Registration response to the client.
+    /// Registration response to the client after attempting registration
     RegistrationResponse {
+        registration_id: String, //new and final id for a client successfully registered
         client_id: String,
         success: bool,
         error: Option<String>, // Optional error message if registration failed
     },
     /// Publish request from the client.
     PublishRequest {
-        client_id: String,
+        registration_id: String, //TODO: should this be client id or registration id?
         topic: String,
         payload: String,
     },
@@ -39,29 +40,30 @@ pub enum BrokerMessage {
     },
     /// Subscribe request from the client.
     SubscribeRequest {
-        client_id: String,
+        registration_id: String,
         topic: String,
     },
     /// Subscribe acknowledgment to the client.
     SubscribeAcknowledgment {
-        client_id: String,
+        registration_id: String,
         topic: String,
         result: Result<(), String>, // Ok for success, Err with error message
     },
     /// Unsubscribe request from the client.
     UnsubscribeRequest {
-        client_id: String,
+        registration_id: String,
         topic: String,
     },
     /// Unsubscribe acknowledgment to the client.
     UnsubscribeAcknowledgment {
-        client_id: String,
+        registration_id: String,
         topic: String,
         result: Result<(), String>, // Ok for success, Err with error message
     },
     /// Disconnect request from the client.
     DisconnectRequest {
-        client_id: String,
+        registration_id: String, // session agent id that disconnected
+        client_id: String, //listener id
     },
     /// Error message to the client.
     ErrorMessage {
@@ -70,13 +72,22 @@ pub enum BrokerMessage {
     },
     /// Ping message to the client to check connectivity.
     PingMessage {
-        client_id: String,
+        registration_id : String,
+        // ping_count: usize,
     },
     /// Pong message received from the client in response to a ping.
     PongMessage {
-        client_id: String,
+        registration_id: String,
     },
+    TimeoutMessage {
+        registration_id: String, //name of the session agent that died
+    }
 }
+#[derive(Debug)]
+pub struct TimeoutMessage {
+    pub registration_id: String,
+}
+
 
 pub fn init_logging() {
     let dir = tracing_subscriber::filter::Directive::from(tracing::Level::DEBUG);
