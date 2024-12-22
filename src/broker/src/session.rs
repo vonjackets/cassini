@@ -210,6 +210,12 @@ impl Actor for SessionAgent {
                 debug!("Received pong from broker for session");
                 
             },
+            BrokerMessage::DisconnectRequest { client_id } => {
+                //client disconnected, clean up after it then die with honor
+                debug!("client {client_id} disconnected");
+                myself.kill();
+            
+            }
             _ => {
                 todo!()
             }

@@ -5,6 +5,8 @@ use tracing::{debug, info, warn};
 
 use common::BrokerMessage;
 
+use crate::broker::Broker;
+
 // ============================== Topic Supervisor definition ============================== //
 
 pub struct TopicManager;
@@ -77,6 +79,7 @@ impl Actor for TopicManager {
         let state:TopicManagerState = TopicManagerState {
             topics: HashMap::new()
          };
+        myself.link(where_is(args.broker_id).unwrap());
         debug!("Starting {myself:?}");
         Ok(state)
     }
@@ -86,6 +89,7 @@ impl Actor for TopicManager {
         myself: ActorRef<Self::Msg>,
         state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
             debug!("{myself:?} Started");
+            
             Ok(())
 
     }
@@ -115,17 +119,29 @@ impl Actor for TopicManager {
                 match registration_id {
                     Some(registration_id) => {
                                         //check topic exists, validate whether an agent to handle that queue already exists
-                        if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
-                            agentRef.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.clone()), topic });
+                        if let Some(_) = state.topics.get(&registration_id.clone()) {
+                            warn!("client {registration_id} already registered!");
+                            //send ack anyway
                         } else {
                             warn!("No agent set to handle topic: {topic}, starting new agent...");    
                             //TODO: spin up new topic actor if topic doesn't exist?
                             let args = TopicAgentArgs { topic: topic.clone() };
-                            let (actor, _) = Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await.expect("Failed to start actor for topic {topic}");
-                            state.topics.insert(topic.clone(), actor.clone());
-
-                        
+                            match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
+                            
+                            Ok((actor, _)) => {
+                                state.topics.insert(topic.clone(), actor.clone());
+                            },
+                            Err(e) => {
+                                tracing::error!("Failed to start actor for topic: {topic}");
+                                //TOOD: send error message here
+                                match myself.try_get_supervisor() {
+                                    Some(broker) => broker.send_message(BrokerMessage::ErrorMessage{ client_id: registration_id.clone(), error: e.to_string()}).unwrap(),
+                                    None => todo!()
+                                }
+                            }
+                            }
                         }
+                            
                     }, None => {
                         todo!()
                     }

@@ -143,12 +143,21 @@ impl Actor for SubscriberAgent {
         myself: ActorRef<Self::Msg>,
         args: SubscriberAgentArgs
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!("{myself:?} starting");
+        tracing::debug!("{myself:?} starting");
         //parse args. if any
         let state = SubscriberAgentState { registration_id: args.registration_id, session_agent_ref: args.session_agent_ref };
 
         Ok(state)
     }
+
+    async fn post_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+            tracing::debug!("{myself:?} Started");
+            Ok(())
+    }
+
 
     async fn handle(
         &self,

@@ -156,12 +156,6 @@ impl Actor for ListenerManager {
                 where_is(client_id.clone()).unwrap().send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success, error }).expect("Failed to forward message to client: {client_id}");
                 
             },
-            BrokerMessage::DisconnectRequest { registration_id, client_id } => {
-                info!("received disconnect request for session: {registration_id}");
-                //kill
-                let listener_ref = state.listeners.get(&client_id).expect("Failed to find listener agent by id {client_id}");
-                listener_ref.kill();
-            }
             _ => {
                 todo!()
             }
@@ -197,12 +191,16 @@ impl Listener {
     async fn write(client_id: String, msg: ClientMessage, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
         match serde_json::to_string(&msg) {
             Ok(serialized) => {
-                tokio::spawn(async move {
+
+                tokio::spawn( async move {
                     let mut writer = writer.lock().await;
                     if let Err(e) = writer.write_all(serialized.as_bytes()).await {
                         warn!("Failed to send message to client {client_id}: {msg:?}");
                     }
-                }); 
+                     writer.flush().await.expect("???");
+                }).await.expect("Expected write thread to finish");
+
+                
             }
             Err(e) => error!("{e}")
         }
@@ -242,43 +240,33 @@ impl Actor for Listener {
             let mut buf = String::new();
 
             let mut buf_reader = tokio::io::BufReader::new(reader);
-            loop {
-                
-                // ready can return false positives, wait a moment
-                // thread::sleep(Duration::from_secs(1));    
-                    match buf_reader.read_line(&mut buf).await {
-                        Ok(bytes) => {
-                        //debug!("Received {received} bytes");
-                            if bytes == 0 {
-                                ()
-                            } else {
+            loop {  
+                match buf_reader.read_line(&mut buf).await {
+                    Ok(bytes) => {
+                    //debug!("Received {received} bytes");
+                        if bytes == 0 { () } else {        
+                            if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
+                                info!("Received message: {msg:?}");
+                                //Not sure if this is conventional, just pipe the message to the handler
+                                let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
+                                myself.cast(converted_msg).expect("Could not forward message to {myself:?}");
                                 
-                                if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
-                                    info!("Received message: {msg:?}");
-                                    //Not sure if this is conventional, just pipe the message to the handler
-                                    let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
-                                    myself.cast(converted_msg).expect("Could not forward message to {myself:?}");
-                                    
-                                } else {
-                                    //bad data
-                                    warn!("Failed to parse message from client");
-                                   // todo!("Send message back to client with an error");
-                                }
+                            } else {
+                                //bad data
+                                warn!("Failed to parse message from client");
+                                // todo!("Send message back to client with an error");
                             }
-
-                            
-                            }, Err(e) => error!("{e}")
                         }
-                    
-                    
-            }
                         
-
-            // Handle client disconnection
-            debug!("Client disconnected");
-            myself.kill();
-            
-
+                    }, 
+                    Err(e) => {
+                            // Handle client disconnection, die with honor for now
+                            myself.send_message(BrokerMessage::DisconnectRequest { client_id: id.clone() }).unwrap();
+                            warn!("Client disconnected: {e}");
+                            myself.kill();
+                    }
+                } 
+            }
         });
         Ok(())
     }
@@ -298,6 +286,8 @@ impl Actor for Listener {
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 debug!("Client {client_id} successfully registered with id: {registration_id}");
                 state.registration_id = Some(registration_id);
+                
+                Listener::write(client_id.clone(), ClientMessage::RegistrationResponse { client_id, success: true, error: None }, Arc::clone(&state.writer)).await;
             },
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 info!("Successfully published message to topic: {topic}");
@@ -338,6 +328,18 @@ impl Actor for Listener {
                 
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
+            BrokerMessage::DisconnectRequest { client_id } => {
+                //forward
+                //if we're registered, propogate to session agent, otherwise, die with honor
+                match &state.registration_id {
+                    Some(id) => {
+                        where_is(id.to_string()).unwrap().send_message(BrokerMessage::DisconnectRequest { client_id: state.client_id.clone() }).unwrap();
+                    }
+                    _ => ()
+                }
+                _myself.kill();
+
+            }
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
 
             _ => {

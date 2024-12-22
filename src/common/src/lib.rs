@@ -64,7 +64,6 @@ pub enum BrokerMessage {
     },
     /// Disconnect request from the client.
     DisconnectRequest {
-        registration_id: String, // session agent id that disconnected
         client_id: String, //listener id
     },
     /// Error message to the client.

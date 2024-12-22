@@ -95,7 +95,7 @@ impl Actor for Broker {
                 //NOTE: "Remote" actors can't have their types checked? But they do send serializable messages
                 // If we can deserialize them to a datatype here, that may be another acceptable means of determining type
                 if let Some(_) = actor_cell.is_message_type_of::<BrokerMessage>() {
-                    info!("Worker Listener Manager: {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
+                    info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
                     //start new listener manager
                     todo!()
                 }
@@ -157,13 +157,6 @@ impl Actor for Broker {
                 
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                //forward to subscriber and topic manager to ensure logic is followed
-                // match &state.subscriber_manager {
-                //     Some(actor) => {
-                //         actor.send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
-                //     },
-                //     None => todo!(),
-                // }
                 where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
                 match where_is(TOPIC_MANAGER_NAME.to_owned()) {
                     Some(actor) => {
@@ -177,7 +170,9 @@ impl Actor for Broker {
                 where_is(registration_id.clone()).unwrap().send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward message to session: {registration_id}");
             },
             BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
-            BrokerMessage::ErrorMessage { client_id, error } => todo!(),
+            BrokerMessage::ErrorMessage { client_id, error } => {
+                warn!("Error Received: {error}");
+            },
             BrokerMessage::PongMessage { registration_id } => todo!(),
             BrokerMessage::TimeoutMessage { registration_id } => {
                 warn!("Received timeout for registration ID: {registration_id}");                

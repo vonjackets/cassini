@@ -86,11 +86,8 @@ impl Actor for TcpClientActor {
                 // thread::sleep(Duration::from_secs(1));    
                     match buf_reader.read_line(&mut buf).await {
                         Ok(bytes) => {
-                        
-                            if bytes == 0 {
-                                ()
-                            } else {
-                                info!("Received message: {buf}");
+                            if bytes == 0 { () } else {
+                                // debug!("Received message: {buf}");
                                 if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
                                     info!("{msg:?}");
                                 } else {
@@ -99,9 +96,9 @@ impl Actor for TcpClientActor {
                                    // todo!("Send message back to client with an error");
                                 }
                             }
-                            }, Err(e) => error!("{e}")
-                        }
-        
+                        }, 
+                        Err(e) => error!("{e}")
+                    }
             }            
 
         });
@@ -149,15 +146,19 @@ impl Actor for TcpClientActor {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     common::init_logging();
 
-    let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
+    let _ = tokio::spawn(async move {
+        let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
 
     
-    client.send_interval( Duration::from_secs(3), || { 
+    client.send_after( Duration::from_secs(3), || { 
         tracing::info!("Sending message");
         TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })});
-
+    
+    
     handle.await.expect("something happened");
     
+    }).await.expect("Keep actor alive");
+
     Ok(())
 
     
