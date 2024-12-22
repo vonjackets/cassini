@@ -7,7 +7,7 @@ use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use common::{BrokerMessage, ClientMessage};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::field::debug;
 
 
@@ -36,13 +36,6 @@ struct TcpClientState {
 struct TcpClientActor;
 
 impl TcpClientActor {
-    async fn write(msg: String, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
-        println!("Sending message to client: {msg}");
-        let mut writer = writer.lock().await;
-        writer.write_all(msg.as_bytes()).await.expect("Error writing to client");
-        
-
-    }
 
     // fn handle_broker_message(msg: ClientMessage, state: &mut TcpClientState) {
 
@@ -59,7 +52,7 @@ impl Actor for TcpClientActor {
     async fn pre_start(&self,
         myself: ActorRef<Self::Msg>,
         args: ()) -> Result<Self::State, ActorProcessingErr> {
-        println!("TCP Client Actor starting...");
+        info!("TCP Client Actor starting...");
 
         let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
         let stream = TcpStream::connect(bind_addr).await.expect("Failed to connect to {bind_addr}");
@@ -83,35 +76,34 @@ impl Actor for TcpClientActor {
         state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
         println!("Entering read_loop ");
         let reader = tokio::io::BufReader::new(state.reader.take().expect("Reader already taken!"));
-        
         //start listening
-        let _ = tokio::spawn(async move {        
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                debug!("Reading line: {line}");
-                if let Ok(msg) = serde_json::from_str::<ClientMessage>(&line) {
-                    info!("Received message: {msg:?}");
-                    match msg {
-                        ClientMessage::PublishResponse { topic, payload, result } => {},
-                        ClientMessage::SubscribeAcknowledgment { topic, result } => {
-                            match result {
-                                Ok(()) => debug!("Successfully subscribed to topic: {topic}"),
-                                Err(msg) => warn!("Failed to subscribe to topic {topic}: {msg}")
-                            }
+        let _ = tokio::spawn(async move {
+            let mut buf = String::new();
 
-                        },            
-                        ClientMessage::PingMessage => todo!(),
-                        ClientMessage::PongMessage => todo!(),
-                        _ => todo!()
-                    }
-                } else {
-                    //bad data
-                    warn!("Failed to parse message from client");
-                    todo!("Send message back to client with an error");
-                }
-            }
-            // TODO: Handle client disconnection
-            
+            let mut buf_reader = tokio::io::BufReader::new(reader);
+            loop {      
+                // ready can return false positives, wait a moment
+                // thread::sleep(Duration::from_secs(1));    
+                    match buf_reader.read_line(&mut buf).await {
+                        Ok(bytes) => {
+                        
+                            if bytes == 0 {
+                                ()
+                            } else {
+                                info!("Received message: {buf}");
+                                if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
+                                    info!("{msg:?}");
+                                } else {
+                                    //bad data
+                                    warn!("Failed to parse message from client");
+                                   // todo!("Send message back to client with an error");
+                                }
+                            }
+                            }, Err(e) => error!("{e}")
+                        }
+        
+            }            
+
         });
             
 
@@ -132,11 +124,15 @@ impl Actor for TcpClientActor {
         state: &mut Self::State,) -> Result<(), ActorProcessingErr> {
         match message {
             TcpClientMessage::Send(broker_msg) => {
-                debug!("Received message: {broker_msg:?}");
+                //debug!("Received message: {broker_msg:?}");
                 let str = serde_json::to_string(&broker_msg).unwrap();
                 let owned_clone = str.clone();
 
-                TcpClientActor::write(owned_clone, Arc::clone(&state.writer)).await;
+                println!("Sending message to broker...");
+                let mut writer = state.writer.lock().await;        
+                let _ = writer.write_all(str.as_bytes()).await.expect("Expected message to send over TCP");
+                    
+                writer.flush().await.expect("Expected buffer to get flushed");
 
                 // Serialize the BrokerMessage
                 //let serialized_msg = owned_clone.as_bytes();
@@ -155,9 +151,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
 
-    // handle.await.expect("something happened");
+    
+    client.send_interval( Duration::from_secs(3), || { 
+        tracing::info!("Sending message");
+        TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })});
 
-    client.cast(TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })).unwrap();
+    handle.await.expect("something happened");
+    
     Ok(())
 
     

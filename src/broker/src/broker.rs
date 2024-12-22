@@ -1,8 +1,8 @@
 use tracing::{info, warn};
 use uuid::Uuid;
-use crate::listener::{ListenerManager, ListenerManagerArgs};
-use common::BrokerMessage;
-use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
+use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
+use ractor::{actor::actor_cell, async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -34,35 +34,34 @@ impl Actor for Broker {
         let mut handles = Vec::new();
         //clone actor re
         handles.push(tokio::spawn(async move {
-            let (listener_manager, handle) = Actor::spawn(Some("listenerManager".to_owned()), ListenerManager, ListenerManagerArgs { broker_id: "BrokerSupervisor".to_string()}).await.expect("Failed to start listener manager");
+            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, ListenerManagerArgs { broker_id: "BrokerSupervisor".to_string()}).await.expect("Failed to start listener manager");
             handle.await.expect("Failed");
         }));
 
+        handles.push(tokio::spawn(async move {
+            let session_mgr_args = SessionManagerArgs {
+                broker_id: "BrokerSupervisor".to_string()
+            };
+            let (_, handle) = Actor::spawn(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, session_mgr_args).await.expect("");
+            handle.await.expect("????");
+        }));
 
+        handles.push(tokio::spawn(async move {
+        //TODO: read these from configuration
+            let topic_mgr_args = TopicManagerArgs {topics: None, broker_id: "BrokerSupervisor".to_string()};
+            // start topic manager
+            let (_, handle) = Actor::spawn(Some(TOPIC_MANAGER_NAME.to_owned()), TopicManager, topic_mgr_args).await.expect("Could not start topic manager agent");    
+            handle.await.expect("????");
+        }));
 
-        
-        // handles.push(tokio::spawn(async move {
-        //     let session_mgr_args = SessionManagerArgs {
-        //         broker_id: "BrokerSupervisor".to_string()
-        //     };
-        //     let (session_mgr, session_handle) = Actor::spawn(Some("sessionManager".to_string()), SessionManager, session_mgr_args).await.expect("");
-        //     session_handle.await.expect("????");
-        // }));
-
-        // handles.push(tokio::spawn(async move {
-        // //TODO: read these from configuration
-        //     let topic_mgr_args = TopicManagerArgs {topics: None};
-        //     // start topic manager
-        //     let (topic_manager, topic_mgr_handle) = Actor::spawn(Some("topicManager".to_owned()), TopicManager, topic_mgr_args).await.expect("Could not start topic manager agent");    
-        // }));
-
-        // //let subscriber_mgr_args = SubscriberManagerArgs { topic_mgr_ref: topic_manager.clone(), session_manager_ref: session_mgr.clone() };
-        // handles.push(tokio::spawn(async move {
-        //     let subscriber_mgr_args = SubscriberManagerArgs {
-        //         broker_id: "BrokerSupervisor".to_string()
-        //     };
-        //     let (subscriber_mgr, subscriber_handle) = Actor::spawn(Some("subscriberManager".to_string()), SubscriberManager, subscriber_mgr_args).await.expect("Failed to start subscriber manager");
-        // }));
+        //let subscriber_mgr_args = SubscriberManagerArgs { topic_mgr_ref: topic_manager.clone(), session_manager_ref: session_mgr.clone() };
+        handles.push(tokio::spawn(async move {
+            let subscriber_mgr_args = SubscriberManagerArgs {
+                broker_id: "BrokerSupervisor".to_string()
+            };
+            let (_, handle) = Actor::spawn(Some(SUBSCRIBER_MANAGER_NAME.to_string()), SubscriberManager, subscriber_mgr_args).await.expect("Failed to start subscriber manager");
+            handle.await.expect("????");
+        }));
 
         let state = BrokerState {
             listener: None,
@@ -78,7 +77,17 @@ impl Actor for Broker {
         
         match msg {
             SupervisionEvent::ActorStarted(actor_cell) => {
-                info!("Worker agent: {0:?}:{1:?} started", actor_cell.get_name(), actor_cell.get_id());
+                match actor_cell.get_name() {
+                 Some(name)   => {
+                    info!("Worker agent: {name}:{0:?} started", actor_cell.get_id());
+                    let worker = ActorRef::from(actor_cell);
+                    if name == LISTENER_MANAGER_NAME { state.listener = Some(worker.clone())}
+                    if name == SESSION_MANAGER_NAME  { state.session_manager = Some(ActorRef::from(worker.clone()))}
+                    if name == TOPIC_MANAGER_NAME    { state.topic_manager = Some(ActorRef::from(worker.clone()))}
+                    if name == SUBSCRIBER_MANAGER_NAME { state.subscriber_manager = Some(ActorRef::from(worker.clone()))}
+                 },
+                 None => todo!()
+                }
             }
             SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
                 
@@ -118,21 +127,20 @@ impl Actor for Broker {
                 //The listenerManager forwarded the request, generate a new ID to serve as their identifier for internal purposes
                 //TODO: Is there any reason we'd fail at this point? User can authenticate but isn't authroized?
                 info!("Registering client {client_id}");
-                // Generate a new registration ID
-                let registration_id = Uuid::new_v4().to_string();
-                
-                
-                //TODO: anything to do here state-wise?
 
-                // Send RegistrationResponse to SessionManager and ListenerManager to signal success
+                // Send RegistrationResponse to SessionManager 
                 
-                // state.session_mgr.send_message(BrokerMessage::RegistrationResponse {
-                //     registration_id: registration_id.clone(),
-                //     client_id: client_id.clone(),
-                //     success: true, 
-                //     error: None 
-                // })
-                // .expect("Failed to forward registration response to session manager");
+                match &state.session_manager
+                {
+                    Some(session_mgr) => {
+                        session_mgr.send_message(BrokerMessage::RegistrationRequest { client_id: client_id.clone() }).expect("Failed to forward registration response to listener manager");
+                    }, 
+                    None => todo!()
+                }
+            },
+            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
+                //Use enum type as a confirmation that session agent has started, all comms between clients and the broker should now flow through the session agent
+                info!("Session started for client: {client_id}");
                 match &state.listener
                 {
                     Some(listener) => {
@@ -146,12 +154,23 @@ impl Actor for Broker {
                     }, 
                     None => todo!()
                 }
-
+                
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 //forward to subscriber and topic manager to ensure logic is followed
-                state.subscriber_manager.as_ref().unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
-                state.topic_manager.as_ref().unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id, topic }).expect("Failed to forward subscribeRequest to topic manager");
+                // match &state.subscriber_manager {
+                //     Some(actor) => {
+                //         actor.send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
+                //     },
+                //     None => todo!(),
+                // }
+                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
+                match where_is(TOPIC_MANAGER_NAME.to_owned()) {
+                    Some(actor) => {
+                        actor.send_message(BrokerMessage::SubscribeRequest { registration_id, topic }).expect("Failed to forward subscribeRequest to topic manager");
+                    },
+                    None => todo!(),
+                }
             },
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
                 info!("Received successful subscribe ack for session: {registration_id}");

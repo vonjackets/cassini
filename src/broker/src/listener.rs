@@ -1,4 +1,4 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, Interest}, net::{tcp::OwnedReadHalf, TcpListener}, sync::Mutex};
+use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, Interest}, net::{tcp::OwnedReadHalf, TcpListener}, sync::Mutex};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::field::debug;
 use crate::{broker::{self, Broker}, session::{self, SessionManager, SessionManagerMessage}, topic::{TopicManager, TopicManagerArgs}};
@@ -50,7 +50,7 @@ impl Actor for ListenerManager {
 
         //link with supervisor
         myself.link(state.broker_ref.get_cell());
-        myself.notify_supervisor(ractor::SupervisionEvent::ActorStarted(myself.get_cell()));
+        //myself.notify_supervisor(ractor::SupervisionEvent::ActorStarted(myself.get_cell()));
 
 
         let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
@@ -60,9 +60,9 @@ impl Actor for ListenerManager {
         
         //TODO: evaluate whether this is the correct flow
         let handle = tokio::spawn(async move {
-            loop {
-                match server.accept().await {
-                    Ok((stream,_))=> {
+            
+               while let Ok((stream, _)) = server.accept().await {
+                    
                         // Generate a unique client ID
                         let client_id = uuid::Uuid::new_v4().to_string();
                         
@@ -90,14 +90,13 @@ impl Actor for ListenerManager {
                         // myself.cast(BrokerMessage::RegistrationRequest { client_id: client_id.clone() }).expect("Failed to send self a Registration Request for new conn");
                         // debug!("forwarded registration request to {myself:?}");
 
-                    },
-                    Err(_) => todo!()
-                }
+                    
             }
+        
        
         });
 
-        handle.await.expect("Error awaiting handle for tcp server");
+        //handle.await.expect("Error awaiting handle for tcp server");
 
         Ok(())
     }
@@ -242,38 +241,38 @@ impl Actor for Listener {
 
             let mut buf = String::new();
 
-
-            match reader.ready(Interest::READABLE).await{
-                _ => {
-                    let mut buf_reader = tokio::io::BufReader::new(reader);
-                    // ready can return false positives, wait a moment
-                    // thread::sleep(Duration::from_secs(1)); 
-                        
-                        match buf_reader.read_line(&mut buf).await {
-                            Ok(bytes) => {
-                            //debug!("Received {received} bytes");
-                        
-                                //Stringify
-                            info!("Received message: {buf}");
-                            if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
-                                //Not sure if this is conventional, just pipe the message to the handler
-                                let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
-                                myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
-                                
+            let mut buf_reader = tokio::io::BufReader::new(reader);
+            loop {
+                
+                // ready can return false positives, wait a moment
+                // thread::sleep(Duration::from_secs(1));    
+                    match buf_reader.read_line(&mut buf).await {
+                        Ok(bytes) => {
+                        //debug!("Received {received} bytes");
+                            if bytes == 0 {
+                                ()
                             } else {
-                                //bad data
-                                warn!("Failed to parse message from client");
-                               // todo!("Send message back to client with an error");
+                                
+                                if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
+                                    info!("Received message: {msg:?}");
+                                    //Not sure if this is conventional, just pipe the message to the handler
+                                    let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
+                                    myself.cast(converted_msg).expect("Could not forward message to {myself:?}");
+                                    
+                                } else {
+                                    //bad data
+                                    warn!("Failed to parse message from client");
+                                   // todo!("Send message back to client with an error");
+                                }
                             }
-                                }, Err(e) => error!("{e}")
-                            }
+
                             
-                }
+                            }, Err(e) => error!("{e}")
+                        }
+                    
                     
             }
-
-                
-            
+                        
 
             // Handle client disconnection
             debug!("Client disconnected");
@@ -297,7 +296,7 @@ impl Actor for Listener {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
-                debug!("Received registration ack from manager!");
+                debug!("Client {client_id} successfully registered with id: {registration_id}");
                 state.registration_id = Some(registration_id);
             },
             BrokerMessage::PublishResponse { topic, payload, result } => {
@@ -323,7 +322,10 @@ impl Actor for Listener {
                     Some(registration_id) => {
                         //forward to session
                         where_is(registration_id.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.to_owned()), topic}).expect("Failed to forward subscribe request to session {registration_id}");
-                    }, None => todo!("Unregistered listener trying to subscribe to topic {topic}, Send 403 type error to client")
+                    }, None => {
+                        
+                        todo!("Unregistered listener trying to subscribe to topic {topic}, Send 403 type error to client")
+                    }
                 }
                
             }

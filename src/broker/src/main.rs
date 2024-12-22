@@ -27,5 +27,6 @@ async fn main() {
     let (broker, handle) = Actor::spawn(Some("BrokerSupervisor".to_string()), Broker, ())
         .await
         .expect("Failed to start Broker");
+    //CAUTION: Don't touch
     handle.await.expect("Something went wrong");
 }

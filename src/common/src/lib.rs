@@ -4,8 +4,15 @@ use tracing::warn;
 
 //TODO: Standardize logging messages 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
+pub const LISTENER_MANAGER_NAME: &str = "LISTENER_MANAGER";
 
+pub const SESSION_MANAGER_NAME: &str = "SESSION_MANAGER";
+
+pub const TOPIC_MANAGER_NAME: &str = "TOPIC_MANAGER";
+
+pub const SUBSCRIBER_MANAGER_NAME: &str = "SUBSCRIBER_MANAGER";
 /// Internal messagetypes for the Broker.
+/// 
 #[derive(Debug)]
 pub enum BrokerMessage {
     /// Registration request from the client.

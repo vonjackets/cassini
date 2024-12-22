@@ -13,8 +13,6 @@ pub struct SubscriberManager;
 /// Define the state for the actor
 pub struct SubscriberManagerState {
     subscribers: HashMap<String, ActorRef<BrokerMessage>>,  // Map of registration_id to Subscriber addresses
-    topic_manager_ref: ActorRef<BrokerMessage>,
-    session_manager_ref: ActorRef<BrokerMessage>,
 }
 
 pub struct SubscriberManagerArgs {
@@ -33,17 +31,23 @@ impl Actor for SubscriberManager {
         myself: ActorRef<Self::Msg>,
         args: SubscriberManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!("{myself:?} starting");
+        tracing::debug!("{myself:?} starting");
 
         //link with supervisor
         myself.link(where_is(args.broker_id).unwrap());
-        myself.notify_supervisor(SupervisionEvent::ActorStarted(myself.get_cell().clone()));
-        
         //parse args. if any
-        let state = SubscriberManagerState { subscribers: todo!(), topic_manager_ref: todo!(), session_manager_ref: todo!() };
-
+        let state = SubscriberManagerState { subscribers: HashMap::new()};
         Ok(state)
     }
+
+    async fn post_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+            tracing::debug!("{myself:?} Started");
+            Ok(())
+
+        }
 
     async fn handle(
         &self,
@@ -62,9 +66,10 @@ impl Actor for SubscriberManager {
                             //TODO: determine naming convention for subscriber agents?
                             // session_id:topic?
                             let agent_name = String::from(registration_id.clone() + ":" + &topic);
+                            let session = ActorRef::from(where_is(registration_id.clone()).unwrap());
                             let args = SubscriberAgentArgs {
                                 registration_id: registration_id.clone(),
-                                session_agent_ref: state.subscribers.get(&registration_id).unwrap().clone()
+                                session_agent_ref: session.clone()
                             };
                             let (subscriber_ref, _) = Actor::spawn_linked(Some(agent_name), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {agent_name}");
         

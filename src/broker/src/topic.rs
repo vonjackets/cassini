@@ -14,7 +14,8 @@ pub struct TopicManagerState {
 }
 
 pub struct  TopicManagerArgs {
-    pub topics: Option<Vec<String>>
+    pub topics: Option<Vec<String>>,
+    pub broker_id: String,
 }
 
 impl TopicManager {
@@ -76,10 +77,19 @@ impl Actor for TopicManager {
         let state:TopicManagerState = TopicManagerState {
             topics: HashMap::new()
          };
-        info!("Starting {myself:?}");
-
+        debug!("Starting {myself:?}");
         Ok(state)
     }
+
+    async fn post_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+            debug!("{myself:?} Started");
+            Ok(())
+
+    }
+
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -92,14 +102,10 @@ impl Actor for TopicManager {
                 match registration_id {
                     Some(registration_id) => {
                                          //forward request to topic agent
-                 if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
-                    agentRef.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id), topic , payload});
+                 if let Some(topic_actor) = state.topics.get(&topic.clone()) {
+                    topic_actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id), topic , payload}).expect("Failed for forward publish request")
                 } else {
                     warn!("No agent set to handle topic: {topic}");
-                    //TODO: Spin up new topic agent?
-                    let session = where_is(registration_id.clone()).expect("Could not get agentref by id {client_id}");
-                    session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
-                    .expect("Failed to send subscribe ack to client {client_id}");
                 }
                     },
                 None => warn!("Received publish request from unknown session. {payload}")
@@ -112,11 +118,13 @@ impl Actor for TopicManager {
                         if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
                             agentRef.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.clone()), topic });
                         } else {
-                            warn!("No agent set to handle topic: {topic}");
-                            //TODO: Spin up new topic agent?
-                            let client = where_is(registration_id.clone()).expect("Could not get agentref by id {client_id}");
-                            client.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id:registration_id.clone(), topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
-                            .expect("Failed to send subscribe ack to client {client_id}");
+                            warn!("No agent set to handle topic: {topic}, starting new agent...");    
+                            //TODO: spin up new topic actor if topic doesn't exist?
+                            let args = TopicAgentArgs { topic: topic.clone() };
+                            let (actor, _) = Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await.expect("Failed to start actor for topic {topic}");
+                            state.topics.insert(topic.clone(), actor.clone());
+
+                        
                         }
                     }, None => {
                         todo!()
@@ -165,9 +173,18 @@ impl Actor for TopicAgent {
 
         let state: TopicAgentState  = TopicAgentState { topic: args.topic.clone() , queue: VecDeque::new(), subscribers: HashMap::new()};
         
-        info!("Started {myself:?}");
+        debug!("Starting... {myself:?}");
 
         Ok(state)
+    }
+
+    async fn post_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+            debug!("{myself:?} Started");
+            Ok(())
+
     }
     async fn handle(
         &self,
@@ -180,7 +197,7 @@ impl Actor for TopicAgent {
             BrokerMessage::SubscribeRequest{registration_id,topic}=>{
                 match registration_id {
                     Some(id) => {
-                        info!("Adding subscriber {id} to topic {topic}");
+                        debug!("Adding subscriber {id} to topic {topic}");
                         let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(id.clone()).unwrap();
                         state.subscribers.insert(id.clone(),client_ref.clone());
                     },
