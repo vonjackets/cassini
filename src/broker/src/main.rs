@@ -24,8 +24,8 @@ use ractor::Actor;
 async fn main() {
     init_logging();
     //start supervisor
-    let (broker, _) = Actor::spawn(Some("broker".to_string()), Broker, ())
+    let (broker, handle) = Actor::spawn(Some("BrokerSupervisor".to_string()), Broker, ())
         .await
         .expect("Failed to start Broker");
-
+    handle.await.expect("Something went wrong");
 }

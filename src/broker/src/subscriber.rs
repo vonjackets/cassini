@@ -1,10 +1,10 @@
 use std::{clone, collections::HashMap};
 
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{info, warn, Subscriber};
 use tracing_subscriber::field::debug;
-
-use crate::{broker::Broker, session::{self, SessionAgentArgs}, BrokerMessage};
+use common::BrokerMessage;
+use crate::{broker::Broker, session::{self, SessionAgentArgs}};
 
 
 pub struct SubscriberManager;
@@ -18,8 +18,7 @@ pub struct SubscriberManagerState {
 }
 
 pub struct SubscriberManagerArgs {
-    pub topic_mgr_ref: ActorRef<BrokerMessage>,
-    pub session_manager_ref: ActorRef<BrokerMessage>,
+    pub broker_id: String,
 }
 
 
@@ -35,6 +34,11 @@ impl Actor for SubscriberManager {
         args: SubscriberManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         info!("{myself:?} starting");
+
+        //link with supervisor
+        myself.link(where_is(args.broker_id).unwrap());
+        myself.notify_supervisor(SupervisionEvent::ActorStarted(myself.get_cell().clone()));
+        
         //parse args. if any
         let state = SubscriberManagerState { subscribers: todo!(), topic_manager_ref: todo!(), session_manager_ref: todo!() };
 
@@ -78,20 +82,25 @@ impl Actor for SubscriberManager {
                 }
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
-                let id = registration_id.clone();
-                if let Some(subscriber_agent_ref) = state.subscribers.clone().get(&id) {
-                    state.subscribers.remove(&registration_id);
-                    //send ack to session\
-                    let session_agent_ref = where_is(registration_id.clone()).unwrap();
-                    session_agent_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id: registration_id.clone(), topic, result: Ok(()) });
-                    //kill agent
+                match registration_id {
+                    Some(id) => {
+                        
+                        if let Some(subscriber_agent_ref) = state.subscribers.clone().get(&id) {
+                            state.subscribers.remove(&id);
+                            //send ack to session\
+                            let session_agent_ref = where_is(id.clone()).unwrap();
+                            session_agent_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id: id.clone(), topic, result: Ok(()) });
+                            //kill agent
 
-                    subscriber_agent_ref.kill();
-                } else {
-                    warn!("Session agent {registration_id} not subscribed to topic {topic}");
-                    //TODO: determine naming convention for subscriber agents?
-                    // session_id:topic?
-                   
+                            subscriber_agent_ref.kill();
+                        } else {
+                            warn!("Session agent {id} not subscribed to topic {topic}");
+                            //TODO: determine naming convention for subscriber agents?
+                            // session_id:topic?
+                        
+                        }
+                    },
+                    None => todo!()
                 }
             },
             _ => todo!()

@@ -3,7 +3,7 @@ use std::{collections::{HashMap, VecDeque}, hash::Hash};
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, info, warn};
 
-use crate::BrokerMessage;
+use common::BrokerMessage;
 
 // ============================== Topic Supervisor definition ============================== //
 
@@ -76,7 +76,7 @@ impl Actor for TopicManager {
         let state:TopicManagerState = TopicManagerState {
             topics: HashMap::new()
          };
-        info!("Started {myself:?}");
+        info!("Starting {myself:?}");
 
         Ok(state)
     }
@@ -89,15 +89,20 @@ impl Actor for TopicManager {
 
         match message {
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
-                 //forward request to topic agent
+                match registration_id {
+                    Some(registration_id) => {
+                                         //forward request to topic agent
                  if let Some(agentRef) = state.topics.get(&registration_id.clone()) {
-                    agentRef.send_message(BrokerMessage::PublishRequest { registration_id, topic , payload});
+                    agentRef.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id), topic , payload});
                 } else {
                     warn!("No agent set to handle topic: {topic}");
                     //TODO: Spin up new topic agent?
                     let session = where_is(registration_id.clone()).expect("Could not get agentref by id {client_id}");
                     session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Result::Err("No topic agent for topic: {topic}".to_string()) })
                     .expect("Failed to send subscribe ack to client {client_id}");
+                }
+                    },
+                None => warn!("Received publish request from unknown session. {payload}")
                 }
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
@@ -184,13 +189,21 @@ impl Actor for TopicAgent {
         
             },
             BrokerMessage::PublishRequest{registration_id,topic,payload}=>{
-                info!(" {myself:?} Recevied message from {0}: {1}",registration_id,payload);
-                state.queue.push_back(payload.clone());info!("{myself:?} notifying subscribers");
-                for (registration_id,listener)in &state.subscribers{ 
-                    
-                    let msg = BrokerMessage::PublishResponse{ topic: state.topic.clone(), payload: payload.clone(), result:Result::Ok(()) };
-                    
-                    debug!("Sending message to {registration_id}:{listener:?}");listener.send_message(msg).unwrap();
+                match registration_id {
+                    Some(registration_id) => {
+                        info!(" {myself:?} Recevied message from {0}: {1}",registration_id,payload);
+                        state.queue.push_back(payload.clone());info!("{myself:?} notifying subscribers");
+                        for (registration_id,listener)in &state.subscribers{ 
+                            
+                            let msg = BrokerMessage::PublishResponse{ topic: state.topic.clone(), payload: payload.clone(), result:Result::Ok(()) };
+                            
+                            debug!("Sending message to {registration_id}:{listener:?}");listener.send_message(msg).unwrap();
+                        }
+                    }, 
+                    None => {
+                        warn!("Received publish request from unknown session: {payload}");
+                        //TODO: send error message
+                    }
                 }
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),

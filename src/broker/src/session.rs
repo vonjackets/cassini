@@ -4,7 +4,8 @@ use ractor::{async_trait, message, registry::where_is, time::send_interval, Acto
 use tracing::{debug, info, warn};
 use tracing_subscriber::field::debug;
 
-use crate::{broker::{self, Broker}, BrokerMessage, TimeoutMessage};
+use crate::{broker::{self, Broker}, TimeoutMessage};
+use common::BrokerMessage;
 
 pub struct SessionManager;
 
@@ -27,14 +28,12 @@ pub enum SessionManagerMessage {
 /// Define the state for the actor
 pub struct SessionManagerState {
     sessions: HashMap<String, Session>,           // Map of registration_id to Session ActorRefesses
-    topic_mgr_ref: Option<ActorRef<BrokerMessage>>,
-    broker_ref: Option<ActorRef<BrokerMessage>>,
+    // topic_mgr_ref: Option<ActorRef<BrokerMessage>>,
+    broker_ref: ActorRef<BrokerMessage>,
 }
 
 pub struct SessionManagerArgs {
-    pub topic_mgr_ref: Option<ActorRef<BrokerMessage>>,
-    pub listener_mgr_ref: Option<ActorRef<BrokerMessage>>,
-    pub broker_ref: Option<ActorRef<BrokerMessage>>,
+    pub broker_id: String,
 }
 
 
@@ -62,16 +61,24 @@ impl Actor for SessionManager {
         args: SessionManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         info!("{myself:?} starting");
+
         //parse args. if any
         let state = SessionManagerState {
-            sessions: HashMap::new(), 
-            topic_mgr_ref: args.topic_mgr_ref, 
-            broker_ref: args.broker_ref ,
+            sessions: HashMap::new(),
+            broker_ref: ActorRef::from(where_is(args.broker_id).unwrap())
         };
 
         Ok(state)
     }
+    async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        info!("{myself:?} started");
 
+        //link with supervisor
+        myself.link(state.broker_ref.get_cell());
+        myself.notify_supervisor(ractor::SupervisionEvent::ActorStarted(myself.get_cell()));
+  
+        Ok(())
+    }
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -86,7 +93,7 @@ impl Actor for SessionManager {
                 if let Some(broker_ref) = myself.try_get_supervisor() {
 
                     let listener_ref = where_is(client_id.clone()).expect("Couldn't find listenerAgent with id {client_id}");
-                    let args = SessionAgentArgs { registration_id: registration_id.clone(), client_ref: listener_ref.into() , broker: broker_ref.into()};
+                    let args = SessionAgentArgs { registration_id: registration_id.clone(), client_ref: listener_ref.into() , broker_ref: broker_ref.into()};
                         
                     let (session_agent, _) = Actor::spawn_linked(Some(registration_id.clone()), SessionAgent, args, myself.clone().into()).await.expect("Couldn't start session agent!");
                     state.sessions.insert(registration_id.clone(), Session {
@@ -97,7 +104,7 @@ impl Actor for SessionManager {
                 }
             
             }
-            BrokerMessage::PingMessage { registration_id } => {
+            BrokerMessage::PingMessage { registration_id, client_id } => {
                 //reset ping count for session
                 debug!("Received ping for session {registration_id}");
                 let session = state.sessions.get_mut(&registration_id).expect("Failed to lookup session for id: {registration_id}");
@@ -122,7 +129,7 @@ pub struct SessionAgent;
 pub struct SessionAgentArgs {
     pub registration_id: String,
     pub client_ref: ActorRef<BrokerMessage>,
-    pub broker: ActorRef<BrokerMessage>
+    pub broker_ref: ActorRef<BrokerMessage>
 }
 pub struct SessionAgentState {
     ///registration_id, mostly a refrence to the agent's actual name in the registry
@@ -145,7 +152,7 @@ impl Actor for SessionAgent {
     ) -> Result<Self::State, ActorProcessingErr> {
         info!("{myself:?} starting");
         //parse args. if any
-        let state = SessionAgentState { registration_id: args.registration_id, client_ref: args.client_ref.clone(), broker: args.broker};
+        let state = SessionAgentState { registration_id: args.registration_id, client_ref: args.client_ref.clone(), broker: args.broker_ref};
 
         Ok(state)
     }
@@ -163,12 +170,13 @@ impl Actor for SessionAgent {
 
         let session_mgr_ref = myself.try_get_supervisor().expect("Failed to get reference to session supervisor");
         
-        send_interval(Duration::from_secs(30), 
-        session_mgr_ref,
-         move || {    
-            debug!("Sending ping to session {id}");
-            BrokerMessage::PingMessage { registration_id: id.clone()}
-        }).await;
+        //TODO: handle timeouts
+        // send_interval(Duration::from_secs(30), 
+        // session_mgr_ref,
+        //  move || {    
+        //     debug!("Sending ping to session {id}");
+        //     BrokerMessage::PingMessage { registration_id: id.clone()}
+        // }).await;
 
 
 
@@ -194,7 +202,7 @@ impl Actor for SessionAgent {
             },
             
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
-            BrokerMessage::PingMessage { registration_id } => {
+            BrokerMessage::PingMessage { registration_id, client_id } => {
                 //forward to broker
                 
             },
