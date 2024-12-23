@@ -1,14 +1,11 @@
-use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, Interest}, net::{tcp::OwnedReadHalf, TcpListener}, sync::Mutex};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, net::TcpListener, sync::Mutex};
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::field::debug;
-use crate::{broker::{self, Broker}, session::{self, SessionManager, SessionManagerMessage}, topic::{TopicManager, TopicManagerArgs}};
-use std::{ collections::HashMap, sync::{mpsc::Receiver, Arc}, thread};
+use std::{ collections::HashMap, sync::Arc};
 
 
-use ractor::{concurrency::Duration, message, registry::where_is, Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
+use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
 
-use serde::{Deserialize, Serialize};
 
 use common::{BrokerMessage, ClientMessage};
 
@@ -198,7 +195,7 @@ impl Listener {
                     if let Err(e) = writer.write_all(msg.as_bytes()).await {
                         warn!("Failed to send message to client {client_id}: {msg:?}");
                     }
-                     writer.flush().await.expect("???");
+                    writer.flush().await.expect("???");
                 }).await.expect("Expected write thread to finish");
 
                 
@@ -233,6 +230,7 @@ impl Actor for Listener {
         info!("Listener: Listener started for client_id: {}", state.client_id.clone());
 
         let id= state.client_id.clone();
+        // TOOD: we need to be able to access state from within the read thread to response to client messages with accuracy. use Arc? Mutex?
         let reader = state.reader.take().expect("Reader already taken!");
         
         //start listening
@@ -252,8 +250,9 @@ impl Actor for Listener {
                                     ClientMessage::PingMessage => debug!("PING"),
                                     _ => {
                                       info!("Received message: {msg:?}");
-                                      //Not sure if this is conventional, just pipe the message to the handler
-                                      let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
+                                      
+                                      //TODO: We need to be able to access state here to make sure the registration_id is updated
+                                      let converted_msg = BrokerMessage::from_client_message(msg, id.clone(), None);
                                       myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
                                     }
                                 }
@@ -285,7 +284,7 @@ impl Actor for Listener {
     }
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -296,6 +295,15 @@ impl Actor for Listener {
                 
                 Listener::write(client_id.clone(), ClientMessage::RegistrationResponse { client_id, success: true, error: None }, Arc::clone(&state.writer)).await;
             },
+            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+                //confirm listener has registered session
+                match &state.registration_id {
+                    Some(registration_id) => {
+                        debug!("{myself:?} received publish request from client");
+                        where_is(registration_id.clone()).unwrap().send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id.to_owned()), topic, payload }).expect("");
+                    } None => warn!("Client is unregistered, cannot")
+                }
+            }
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 info!("Successfully published message to topic: {topic}");
                 let msg = ClientMessage::PublishResponse { topic: topic.clone(), payload: payload.clone(), result: Result::Ok(()) };
@@ -344,7 +352,7 @@ impl Actor for Listener {
                     }
                     _ => ()
                 }
-                _myself.kill();
+                myself.kill();
 
             }
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),

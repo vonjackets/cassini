@@ -12,7 +12,7 @@ pub struct SubscriberManager;
 
 /// Define the state for the actor
 pub struct SubscriberManagerState {
-    subscribers: HashMap<String, ActorRef<BrokerMessage>>,  // Map of registration_id to Subscriber addresses
+    subscribers: HashMap<String, Vec<ActorRef<BrokerMessage>>>,  // Map of topics to list of actors subscribed to it
 }
 
 pub struct SubscriberManagerArgs {
@@ -56,7 +56,21 @@ impl Actor for SubscriberManager {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
         match message {
-            BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
+            BrokerMessage::PublishResponse { topic, payload, result } => {
+                tracing::debug!("New message published on topic: {topic}");
+                //Handle ack, a new message was published, alert all subscribed sessions 
+                match state.subscribers.get(&topic).to_owned() {
+                    Some(vec) => {
+                        for subscriber in vec {
+                            tracing::debug!("Notifying subcribers of topic: {topic}");
+                            subscriber.send_message(BrokerMessage::PublishResponse { topic: topic.clone(), payload: payload.clone() , result:result.clone() }).unwrap();
+                        }
+                    } None => {
+                        //No subscribers for this topic, init new vec
+                        state.subscribers.insert(topic, Vec::new());
+                    }
+                }
+            },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 match registration_id {
                     Some(registration_id) => {
@@ -65,20 +79,33 @@ impl Actor for SubscriberManager {
                         } else {
                             //TODO: determine naming convention for subscriber agents?
                             // session_id:topic?
-                            let agent_name = String::from(registration_id.clone() + ":" + &topic);
+                            let agent_name = format!("{registration_id}:{topic}");
                             let session = ActorRef::from(where_is(registration_id.clone()).unwrap());
                             let args = SubscriberAgentArgs {
                                 registration_id: registration_id.clone(),
                                 session_agent_ref: session.clone()
                             };
                             let (subscriber_ref, _) = Actor::spawn_linked(Some(agent_name), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {agent_name}");
-        
-                            state.subscribers.insert(registration_id.clone(), subscriber_ref.clone());
-        
-                            //send ack to session
-        
-                            let session_agent_ref = where_is(registration_id.clone()).unwrap();
-                            session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) });
+                            
+                            // add agent to subscriber list for that topic
+                            if let Some(subscribers) = state.subscribers.get(&topic) {
+                                
+                                subscribers.to_owned().push(subscriber_ref.clone());
+                                tracing::debug!("Topic {topic} has {0} subscriber(s)", subscribers.len());
+                            } else {
+                                //No subscribers, init vec and add subscriber to it
+                                let mut vec = Vec::new();
+                                vec.push(subscriber_ref.clone());
+                                state.subscribers.insert(topic.clone(), vec);
+                            }   
+                            //send ack to broker
+                            //TOOD: Handle what happens if these return none
+
+                            myself.try_get_supervisor().map(|broker| {
+                                broker.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) }).expect("Expected to forward ack to broker");
+                            });
+
+                            
                         }                        
                     }, 
                     None => {
@@ -95,9 +122,9 @@ impl Actor for SubscriberManager {
                             //send ack to session\
                             let session_agent_ref = where_is(id.clone()).unwrap();
                             session_agent_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id: id.clone(), topic, result: Ok(()) });
-                            //kill agent
+                            // //kill agent
 
-                            subscriber_agent_ref.kill();
+                            // subscriber_agent_ref.kill();
                         } else {
                             warn!("Session agent {id} not subscribed to topic {topic}");
                             //TODO: determine naming convention for subscriber agents?

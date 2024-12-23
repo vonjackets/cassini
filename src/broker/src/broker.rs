@@ -167,9 +167,25 @@ impl Actor for Broker {
             },
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
                 info!("Received successful subscribe ack for session: {registration_id}");
-                where_is(registration_id.clone()).unwrap().send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward message to session: {registration_id}");
+                where_is(registration_id.clone()).map(|session_agent_ref|{
+                    session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id.clone(), topic: topic.clone(), result: Ok(()) }).unwrap();
+                });
             },
-            BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
+            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+                //send to topic manager
+
+                match where_is(TOPIC_MANAGER_NAME.to_owned()) {
+                    Some(actor) => {
+                        actor.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).expect("Failed to forward subscribeRequest to topic manager");
+                    },
+                    None => todo!(),
+                }
+                
+            }
+            BrokerMessage::PublishResponse { topic, payload, result } => {
+                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager");
+
+            },
             BrokerMessage::ErrorMessage { client_id, error } => {
                 warn!("Error Received: {error}");
             },

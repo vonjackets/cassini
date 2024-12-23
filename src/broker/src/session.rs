@@ -112,6 +112,14 @@ impl Actor for SessionManager {
                 }
             
             }
+            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+                //forward to broker
+                match myself.try_get_supervisor() {
+                    Some(broker)=> {
+                        broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
+                    }, None => todo!()
+                }
+            }
             BrokerMessage::PingMessage { registration_id, client_id } => {
                 //reset ping count for session
                 debug!("Received ping for session {registration_id}");
@@ -197,8 +205,14 @@ impl Actor for SessionAgent {
         match message {
             BrokerMessage::RegistrationRequest { client_id } => todo!(),
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => todo!(),
-            BrokerMessage::PublishRequest { registration_id, topic, payload } => todo!(),
-            BrokerMessage::PublishResponse { topic, payload, result } => todo!(),
+            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+                //forward to broker
+                state.broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
+            },
+            BrokerMessage::PublishResponse { topic, payload, result } => {
+                //Forward to listener
+                state.client_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("expected to forward to listener");
+            },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 debug!("forwarding susbcribe request for {myself:?}");
                 state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");

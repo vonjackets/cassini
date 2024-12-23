@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, VecDeque}, hash::Hash};
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use common::BrokerMessage;
 
@@ -18,17 +18,6 @@ pub struct TopicManagerState {
 pub struct  TopicManagerArgs {
     pub topics: Option<Vec<String>>,
     pub broker_id: String,
-}
-
-impl TopicManager {
-    pub async fn add_topic(topic: String, topics: &mut HashMap<String, ActorRef<BrokerMessage>>, supervisor: ActorRef<BrokerMessage>) {
-        info!("Creating new topic: {}", topic);
-        //spawn new topic agent to handle it
-        let agent_name = String::from(topic.clone() + "_agent");
-        let args = TopicAgentArgs {topic: topic.clone()};
-        let (agent_ref, _) = Actor::spawn_linked(Some(agent_name.clone()), TopicAgent, args, supervisor.into()).await.expect("Failed to start topic agent");
-        topics.insert(topic.clone(), agent_ref.clone());
-    }
 }
 
 #[async_trait]
@@ -68,18 +57,25 @@ impl Actor for TopicManager {
         let mut state  = TopicManagerState{
             topics: HashMap::new()            
         };
-
+        let broker = where_is(args.broker_id).unwrap();
+        myself.link(broker.clone());
         if let Some(topics) = args.topics {
             for topic in topics {
                 //start topic actors for that topic
-                TopicManager::add_topic(topic, &mut state.topics, myself.clone()).await;
+                let args = TopicAgentArgs{ topic: topic.clone(), broker: ActorRef::from(broker.clone())};
+                match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
+                    Ok(_) => (),
+                    Err(_) => error!("Failed to start actor for topic {topic}"),
+                }
+                    
+                
             }
         }
 
         let state:TopicManagerState = TopicManagerState {
             topics: HashMap::new()
          };
-        myself.link(where_is(args.broker_id).unwrap());
+        
         debug!("Starting {myself:?}");
         Ok(state)
     }
@@ -105,11 +101,28 @@ impl Actor for TopicManager {
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 match registration_id {
                     Some(registration_id) => {
-                                         //forward request to topic agent
+                 //forward request to topic agent
                  if let Some(topic_actor) = state.topics.get(&topic.clone()) {
                     topic_actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id), topic , payload}).expect("Failed for forward publish request")
                 } else {
-                    warn!("No agent set to handle topic: {topic}");
+                    warn!("No agent set to handle topic: {topic}, starting new agent...");    
+                    //TODO: spin up new topic actor if topic doesn't exist?
+                    let broker = myself.try_get_supervisor().unwrap();
+                    let args = TopicAgentArgs { topic: topic.clone(), broker: ActorRef::from(broker) };
+                    match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
+                    
+                    Ok((actor, _)) => {
+                        state.topics.insert(topic.clone(), actor.clone());
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to start actor for topic: {topic}");
+                        //TOOD: send error message here
+                        match myself.try_get_supervisor() {
+                            Some(broker) => broker.send_message(BrokerMessage::ErrorMessage{ client_id: registration_id.clone(), error: e.to_string()}).unwrap(),
+                            None => todo!()
+                        }
+                    }
+                    }
                 }
                     },
                 None => warn!("Received publish request from unknown session. {payload}")
@@ -125,14 +138,14 @@ impl Actor for TopicManager {
                         } else {
                             warn!("No agent set to handle topic: {topic}, starting new agent...");    
                             //TODO: spin up new topic actor if topic doesn't exist?
-                            let args = TopicAgentArgs { topic: topic.clone() };
+                            let args = TopicAgentArgs { topic: topic.clone(), broker: ActorRef::from(myself.try_get_supervisor().unwrap()) };
                             match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
                             
                             Ok((actor, _)) => {
                                 state.topics.insert(topic.clone(), actor.clone());
                             },
                             Err(e) => {
-                                tracing::error!("Failed to start actor for topic: {topic}");
+                                tracing::error!("Failed to start actor for topic: {topic}, {e}");
                                 //TOOD: send error message here
                                 match myself.try_get_supervisor() {
                                     Some(broker) => broker.send_message(BrokerMessage::ErrorMessage{ client_id: registration_id.clone(), error: e.to_string()}).unwrap(),
@@ -162,10 +175,11 @@ struct TopicAgent;
 struct TopicAgentState {
     topic: String,
     queue: VecDeque<String>, //TODO: use polar messagetypes instead
-    subscribers: HashMap<String, ActorRef<BrokerMessage>> //client ids and actors
+    broker: ActorRef<BrokerMessage>
 }
 struct TopicAgentArgs {
-  topic: String   
+  topic: String,
+  broker: ActorRef<BrokerMessage>
 }
 
 #[async_trait]
@@ -187,7 +201,7 @@ impl Actor for TopicAgent {
         args: TopicAgentArgs
     ) -> Result<Self::State, ActorProcessingErr> {
 
-        let state: TopicAgentState  = TopicAgentState { topic: args.topic.clone() , queue: VecDeque::new(), subscribers: HashMap::new()};
+        let state: TopicAgentState  = TopicAgentState { topic: args.topic.clone() , queue: VecDeque::new(), broker: args.broker};
         
         debug!("Starting... {myself:?}");
 
@@ -210,28 +224,25 @@ impl Actor for TopicAgent {
     ) -> Result<(), ActorProcessingErr> {
 
         match message {
-            BrokerMessage::SubscribeRequest{registration_id,topic}=>{
-                match registration_id {
-                    Some(id) => {
-                        debug!("Adding subscriber {id} to topic {topic}");
-                        let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(id.clone()).unwrap();
-                        state.subscribers.insert(id.clone(),client_ref.clone());
-                    },
-                    None => todo!("send error message"),
-                }
+            // BrokerMessage::SubscribeRequest{registration_id,topic}=>{
+            //     match registration_id {
+            //         Some(id) => {
+            //             debug!("Adding subscriber {id} to topic {topic}");
+            //             let client_ref:ActorRef<BrokerMessage> = ActorRef::where_is(id.clone()).unwrap();
+                        
+            //         },
+            //         None => todo!("send error message"),
+            //     }
         
-            },
+            // },
             BrokerMessage::PublishRequest{registration_id,topic,payload}=>{
                 match registration_id {
                     Some(registration_id) => {
                         info!(" {myself:?} Recevied message from {0}: {1}",registration_id,payload);
                         state.queue.push_back(payload.clone());info!("{myself:?} notifying subscribers");
-                        for (registration_id,listener)in &state.subscribers{ 
-                            
-                            let msg = BrokerMessage::PublishResponse{ topic: state.topic.clone(), payload: payload.clone(), result:Result::Ok(()) };
-                            
-                            debug!("Sending message to {registration_id}:{listener:?}");listener.send_message(msg).unwrap();
-                        }
+                        debug!("{topic} queue has {0} message(s) waiting", state.queue.len());
+                        //send ack
+                        state.broker.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) }).unwrap();
                     }, 
                     None => {
                         warn!("Received publish request from unknown session: {payload}");
@@ -239,6 +250,7 @@ impl Actor for TopicAgent {
                     }
                 }
             },
+            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => todo!(),
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
             BrokerMessage::ErrorMessage { client_id, error } => todo!(), 
             _ => {

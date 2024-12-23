@@ -83,19 +83,46 @@ impl Actor for TcpClientActor {
 
             let mut buf_reader = tokio::io::BufReader::new(reader);
 
-                while let Ok(bytes) = buf_reader.read_line(&mut buf).await {
-                    buf.clear();
-                
+                while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
                     if bytes == 0 { () } else {
-                        
+                        info!("{buf}");
                         if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
                             info!("{msg:?}");
+                            // handle publish responses containing new data
+                            match msg {
+                                ClientMessage::PublishResponse { topic, payload, result } => {
+                                    //new message on topic
+                                    if let Ok(()) = result {
+                                        debug!("New message on topic {topic}: {payload}");
+                                    } else {
+                                        warn!("Failed to publish message to topic: {topic}")
+                                    }
+                                },
+
+                                ClientMessage::SubscribeAcknowledgment { topic, result } => {
+                                    if let Ok(()) = result {
+                                        debug!("Successfully subscribed to topic: {topic}");
+                                    } else {
+                                        warn!("Failed to subscribe to topic: {topic}");
+                                    }
+                                },
+
+                                ClientMessage::UnsubscribeAcknowledgment { topic, result } => todo!(),
+
+                                ClientMessage::PongMessage => todo!(),
+                                _ => {
+                                    warn!("Unexpected message {buf}");
+                                }
+
+                                
+                            }
                         } else {
                             //bad data
-                            warn!("Failed to parse message from client");
+                            warn!("Failed to parse message: {buf}");
                             // todo!("Send message back to client with an error");
                         }
                     }
+                    buf.clear();
                 }        
         });
             
@@ -117,20 +144,14 @@ impl Actor for TcpClientActor {
         state: &mut Self::State,) -> Result<(), ActorProcessingErr> {
         match message {
             TcpClientMessage::Send(broker_msg) => {
-                //debug!("Received message: {broker_msg:?}");
                 let str = serde_json::to_string(&broker_msg).unwrap();
                 let msg = format!("{str}\n");
 
-                println!("Sending message to broker...");
-                let mut writer = state.writer.lock().await;        
+                debug!("Sending message: {msg}");
+                let mut writer: tokio::sync::MutexGuard<'_, io::BufWriter<tokio::net::tcp::OwnedWriteHalf>> = state.writer.lock().await;        
                 let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
 
                 writer.flush().await.expect("Expected buffer to get flushed");
-
-                // Serialize the BrokerMessage
-                //let serialized_msg = owned_clone.as_bytes();
-                
-                println!("Message sent: {:?}", broker_msg);
             }
         }
         Ok(())
@@ -146,11 +167,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
 
     
-    client.send_after( Duration::from_secs(3), || { 
-        tracing::info!("Sending message");
-        TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })});
-    
-    client.send_interval(Duration::from_secs(5), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
+    client.send_after( Duration::from_secs(2), || { 
+            tracing::info!("Sending message");
+            TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })});
+        
+    client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
+    client.send_interval(Duration::from_secs(3),
+    || { TcpClientMessage::Send(ClientMessage::PublishRequest { registration_id: None, topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
+    ).await.unwrap();
+
     
     handle.await.expect("something happened");
     

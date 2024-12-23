@@ -92,6 +92,7 @@ pub enum BrokerMessage {
 pub enum ClientMessage {
         /// Publish request from the client.
         PublishRequest {
+            registration_id: Option<String>,
             topic: String,
             payload: String,
         },
@@ -133,29 +134,29 @@ pub enum ClientMessage {
 }
 
 impl BrokerMessage {
-    pub fn from_client_message(msg: ClientMessage, client_id: String) -> Self {
+    pub fn from_client_message(msg: ClientMessage, client_id: String, registration_id: Option<String>) -> Self {
         match msg {
             // ClientMessage::RegistrationRequest { client_id: _ } => {
             //     BrokerMessage::RegistrationRequest {
             //         client_id,
             //     }
             // },
-            ClientMessage::PublishRequest { topic, payload } => {
+            ClientMessage::PublishRequest {registration_id, topic, payload } => {
                 BrokerMessage::PublishRequest {
-                    registration_id: None,
+                    registration_id,
                     topic,
                     payload,
                 }
             },
             ClientMessage::SubscribeRequest {  topic } => {
                 BrokerMessage::SubscribeRequest {
-                    registration_id: None,
+                    registration_id,
                     topic,
                 }
             },
             ClientMessage::UnsubscribeRequest {  topic } => {
                 BrokerMessage::UnsubscribeRequest {
-                    registration_id: None,
+                    registration_id,
                     topic,
                 }
             },
