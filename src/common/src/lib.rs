@@ -88,6 +88,7 @@ pub enum BrokerMessage {
 ///External Messagetypes for client comms
 /// These messages are serialized/deserialized to/from JSON
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
         /// Publish request from the client.
         PublishRequest {

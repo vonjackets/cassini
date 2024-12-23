@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, collections::HashMap, pin, result, time::Duration};
 
-use ractor::{async_trait, message, registry::where_is, time::send_interval, Actor, ActorProcessingErr, ActorRef, Message, RpcReplyPort};
+use ractor::{async_trait, message, registry::where_is, time::send_interval, Actor, ActorProcessingErr, ActorRef, Message, RpcReplyPort, SupervisionEvent};
 use tracing::{debug, info, warn};
 use tracing_subscriber::field::debug;
 use uuid::Uuid;
@@ -131,6 +131,21 @@ impl Actor for SessionManager {
         }
         Ok(())
     }
+
+    async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        match msg {
+            SupervisionEvent::ActorStarted(actor_cell) => {
+                ()
+            },
+            SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
+                debug!("Session: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
+            },
+            SupervisionEvent::ActorFailed(actor_cell, error) => todo!(),
+            SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+        }
+        Ok(())
+    }
+
 }
 
 pub struct SessionAgent;
@@ -223,4 +238,6 @@ impl Actor for SessionAgent {
     
         Ok(())
     }
+
+
 }

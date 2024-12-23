@@ -9,6 +9,7 @@ use common::{BrokerMessage, ClientMessage};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::field::debug;
+use tracing_subscriber::fmt::format;
 
 
 
@@ -81,26 +82,21 @@ impl Actor for TcpClientActor {
             let mut buf = String::new();
 
             let mut buf_reader = tokio::io::BufReader::new(reader);
-            loop {      
-                // ready can return false positives, wait a moment
-                // thread::sleep(Duration::from_secs(1));    
-                    match buf_reader.read_line(&mut buf).await {
-                        Ok(bytes) => {
-                            if bytes == 0 { () } else {
-                                // debug!("Received message: {buf}");
-                                if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
-                                    info!("{msg:?}");
-                                } else {
-                                    //bad data
-                                    warn!("Failed to parse message from client");
-                                   // todo!("Send message back to client with an error");
-                                }
-                            }
-                        }, 
-                        Err(e) => error!("{e}")
-                    }
-            }            
 
+                while let Ok(bytes) = buf_reader.read_line(&mut buf).await {
+                    buf.clear();
+                
+                    if bytes == 0 { () } else {
+                        
+                        if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
+                            info!("{msg:?}");
+                        } else {
+                            //bad data
+                            warn!("Failed to parse message from client");
+                            // todo!("Send message back to client with an error");
+                        }
+                    }
+                }        
         });
             
 
@@ -123,12 +119,12 @@ impl Actor for TcpClientActor {
             TcpClientMessage::Send(broker_msg) => {
                 //debug!("Received message: {broker_msg:?}");
                 let str = serde_json::to_string(&broker_msg).unwrap();
-                let owned_clone = str.clone();
+                let msg = format!("{str}\n");
 
                 println!("Sending message to broker...");
                 let mut writer = state.writer.lock().await;        
-                let _ = writer.write_all(str.as_bytes()).await.expect("Expected message to send over TCP");
-                    
+                let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
+
                 writer.flush().await.expect("Expected buffer to get flushed");
 
                 // Serialize the BrokerMessage
@@ -154,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Sending message");
         TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })});
     
+    client.send_interval(Duration::from_secs(5), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
     
     handle.await.expect("something happened");
     

@@ -194,7 +194,8 @@ impl Listener {
 
                 tokio::spawn( async move {
                     let mut writer = writer.lock().await;
-                    if let Err(e) = writer.write_all(serialized.as_bytes()).await {
+                    let msg = format!("{serialized}\n"); //add newline
+                    if let Err(e) = writer.write_all(msg.as_bytes()).await {
                         warn!("Failed to send message to client {client_id}: {msg:?}");
                     }
                      writer.flush().await.expect("???");
@@ -232,7 +233,7 @@ impl Actor for Listener {
         info!("Listener: Listener started for client_id: {}", state.client_id.clone());
 
         let id= state.client_id.clone();
-        let mut reader = state.reader.take().expect("Reader already taken!");
+        let reader = state.reader.take().expect("Reader already taken!");
         
         //start listening
         let _ = tokio::spawn(async move {
@@ -240,24 +241,30 @@ impl Actor for Listener {
             let mut buf = String::new();
 
             let mut buf_reader = tokio::io::BufReader::new(reader);
-            loop {  
+            loop { 
+                buf.clear();
                 match buf_reader.read_line(&mut buf).await {
                     Ok(bytes) => {
-                    //debug!("Received {received} bytes");
-                        if bytes == 0 { () } else {        
+                        if bytes > 0 {
+                            
                             if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
-                                info!("Received message: {msg:?}");
-                                //Not sure if this is conventional, just pipe the message to the handler
-                                let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
-                                myself.cast(converted_msg).expect("Could not forward message to {myself:?}");
+                                match msg {
+                                    ClientMessage::PingMessage => debug!("PING"),
+                                    _ => {
+                                      info!("Received message: {msg:?}");
+                                      //Not sure if this is conventional, just pipe the message to the handler
+                                      let converted_msg = BrokerMessage::from_client_message(msg, id.clone());
+                                      myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
+                                    }
+                                }
+
                                 
                             } else {
                                 //bad data
                                 warn!("Failed to parse message from client");
                                 // todo!("Send message back to client with an error");
                             }
-                        }
-                        
+                        }    
                     }, 
                     Err(e) => {
                             // Handle client disconnection, die with honor for now

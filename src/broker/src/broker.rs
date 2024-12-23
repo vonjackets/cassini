@@ -97,7 +97,7 @@ impl Actor for Broker {
                 if let Some(_) = actor_cell.is_message_type_of::<BrokerMessage>() {
                     info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
                     //start new listener manager
-                    todo!()
+                    // todo!()
                 }
                 
             }
