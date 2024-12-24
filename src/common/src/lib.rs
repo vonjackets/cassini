@@ -120,13 +120,7 @@ pub enum ClientMessage {
             topic: String,
             result: Result<(), String>
        },
-            /// Registration response to the client after attempting registration
-        RegistrationResponse {
-            client_id: String,
-            success: bool,
-            error: Option<String>, // Optional error message if registration failed
-        },
-    /// 
+        /// 
         /// Ping message to the client to check connectivity.
         PingMessage,
         /// Pong message received from the client in response to a ping.

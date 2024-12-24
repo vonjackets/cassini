@@ -1,6 +1,11 @@
 # cassini
 Polar's resilient message broker
 
-## Notes
-Ractor has the capability to `try_get_supervisor` so we may not need to maintain record of the supervisor trees via the ActorState structs
+
+## Getting started
+
+Both the server and client can be started with a simple `cargo r`
+
+Naturally, the server should be running before the client attempts to connect.
+
 

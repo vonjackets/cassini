@@ -1,12 +1,14 @@
-use std::{clone, collections::HashMap};
+use std::{collections::HashMap};
 
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{info, warn, Subscriber};
-use tracing_subscriber::field::debug;
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use tracing::{info, warn};
+
 use common::BrokerMessage;
-use crate::{broker::Broker, session::{self, SessionAgentArgs}};
 
-
+/// Our supervisor for the subscribers
+/// When a user subscribes to a new topic, this actor is notified inb conjunction with the topic manager.
+/// A new process is started to wait and listen for new messages on that topic and forward messages.
+/// Clients are only considered subscribed if an actor process exists and is managed by this actor
 pub struct SubscriberManager;
 
 
@@ -144,6 +146,10 @@ impl Actor for SubscriberManager {
     }
 }
 
+
+/// Our subscriber actor.
+/// The existence of a running "Subscriber" signifies a clients subscription
+/// it is responsible for forwarding new messages received on its given topic
 pub struct SubscriberAgent;
 
 
@@ -180,7 +186,7 @@ impl Actor for SubscriberAgent {
     async fn post_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+        _: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
             tracing::debug!("{myself:?} Started");
             Ok(())
     }

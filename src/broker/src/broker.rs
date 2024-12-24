@@ -1,8 +1,7 @@
 use tracing::{info, warn};
-use uuid::Uuid;
 use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
 use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
-use ractor::{actor::actor_cell, async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -82,9 +81,9 @@ impl Actor for Broker {
                     info!("Worker agent: {name}:{0:?} started", actor_cell.get_id());
                     let worker = ActorRef::from(actor_cell);
                     if name == LISTENER_MANAGER_NAME { state.listener = Some(worker.clone())}
-                    if name == SESSION_MANAGER_NAME  { state.session_manager = Some(ActorRef::from(worker.clone()))}
-                    if name == TOPIC_MANAGER_NAME    { state.topic_manager = Some(ActorRef::from(worker.clone()))}
-                    if name == SUBSCRIBER_MANAGER_NAME { state.subscriber_manager = Some(ActorRef::from(worker.clone()))}
+                    else if name == SESSION_MANAGER_NAME  { state.session_manager = Some(worker.clone())}
+                    else if name == TOPIC_MANAGER_NAME    { state.topic_manager = Some(worker.clone())}
+                    else if name == SUBSCRIBER_MANAGER_NAME { state.subscriber_manager = Some(worker.clone())}
                  },
                  None => todo!()
                 }
@@ -96,8 +95,7 @@ impl Actor for Broker {
                 // If we can deserialize them to a datatype here, that may be another acceptable means of determining type
                 if let Some(_) = actor_cell.is_message_type_of::<BrokerMessage>() {
                     info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
-                    //start new listener manager
-                    // todo!()
+                    //start new actor
                 }
                 
             }
@@ -112,9 +110,9 @@ impl Actor for Broker {
     
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         info!("Broker: Started {myself:?}");
-
         Ok(())
     }
+    
     async fn handle(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -183,8 +181,12 @@ impl Actor for Broker {
                 
             }
             BrokerMessage::PublishResponse { topic, payload, result } => {
-                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager");
-
+                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).map_or_else(|| {
+                    tracing::error!("Failed to lookup subscriber manager!");
+                    //TOOD: ?
+                }, |actor| {
+                    actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager");
+                });
             },
             BrokerMessage::ErrorMessage { client_id, error } => {
                 warn!("Error Received: {error}");

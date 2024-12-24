@@ -1,14 +1,12 @@
 use std::{collections::{HashMap, VecDeque}, hash::Hash};
-
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, error, info, warn};
-
 use common::BrokerMessage;
 
-use crate::broker::Broker;
-
 // ============================== Topic Supervisor definition ============================== //
-
+/// Our supervisor for managing topics and their message queues
+/// This processes is generally responsible for creating, removing, maintaining which topics
+/// a client can know about
 pub struct TopicManager;
 
 pub struct TopicManagerState {
@@ -45,8 +43,6 @@ impl Actor for TopicManager {
     #[doc = " be necessary to construct the initial state"]
     #[doc = ""]
     #[doc = " Returns an initial [Actor::State] to bootstrap the actor"]
-    
-
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -168,8 +164,8 @@ impl Actor for TopicManager {
 }
 
 // ============================== Topic Worker definition ============================== //
-
-
+/// Our worker process for managing message queues on a given topic
+/// The broker supervisor is generally notified of incoming messages on the message queue.
 struct TopicAgent;
 
 struct TopicAgentState {

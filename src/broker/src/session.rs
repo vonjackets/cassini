@@ -8,6 +8,9 @@ use uuid::Uuid;
 use crate::{broker::{self, Broker}, TimeoutMessage};
 use common::BrokerMessage;
 
+/// The manager process for our concept of client sessions.
+/// When thje broker receives word of a new connection from the listenerManager, it requests
+/// that the client be "registered". Signifying the client as legitimate.
 pub struct SessionManager;
 
 /// Our representation of a connected session, and how close it is to timing out
@@ -15,16 +18,7 @@ pub struct Session {
     agent_ref: ActorRef<BrokerMessage>,
     ping_count: usize
 }
-/// Define the messages the actor can handle
-/// CAUTION: Avoid the urge to make this serializable, ActorRefs aren't.
-/// and the session manager needs to know what listener it's managing a session for
-#[derive(Debug)]
-pub enum SessionManagerMessage { 
-    RegistrationResponse(BrokerMessage),
-    DisconnectRequest(BrokerMessage),
-    ErrorMessage(BrokerMessage),
-    TimeoutMessage(TimeoutMessage),
-}
+
 
 /// Define the state for the actor
 pub struct SessionManagerState {
@@ -40,13 +34,11 @@ pub struct SessionManagerArgs {
 
 /// Message to set the TopicManager ref in SessionManager or other actors.
 #[derive(Debug)]
-// #[rtype(result = "()")]
 pub struct SetTopicManagerRef(pub ActorRef<BrokerMessage>);
 
 
 /// Message to set the ListenerManager ref in other actors.
 #[derive(Debug)]
-// #[rtype(result = "()")]
 pub struct SetListenerManagerActorRef(pub ActorRef<BrokerMessage>);
 
 
@@ -73,10 +65,8 @@ impl Actor for SessionManager {
     }
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         debug!("{myself:?} started");
-
         //link with supervisor
         myself.link(state.broker_ref.get_cell());
-        //myself.notify_supervisor(ractor::SupervisionEvent::ActorStarted(myself.get_cell()));
   
         Ok(())
     }
@@ -156,6 +146,7 @@ impl Actor for SessionManager {
 
 }
 
+/// Worker process for handling client sessions.
 pub struct SessionAgent;
 pub struct SessionAgentArgs {
     pub registration_id: String,
@@ -163,7 +154,6 @@ pub struct SessionAgentArgs {
     pub broker_ref: ActorRef<BrokerMessage>
 }
 pub struct SessionAgentState {
-
     pub client_ref: ActorRef<BrokerMessage>,     ///id of client listener to connect to
     pub broker: ActorRef<BrokerMessage>
 }
