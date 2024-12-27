@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use common::BrokerMessage;
 
@@ -99,10 +99,9 @@ impl Actor for SubscriberManager {
                                 let mut vec = Vec::new();
                                 vec.push(subscriber_ref.clone());
                                 state.subscribers.insert(topic.clone(), vec);
-                            }   
+                            }
+                            
                             //send ack to broker
-                            //TOOD: Handle what happens if these return none
-
                             myself.try_get_supervisor().map(|broker| {
                                 broker.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) }).expect("Expected to forward ack to broker");
                             });
@@ -117,16 +116,20 @@ impl Actor for SubscriberManager {
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 match registration_id {
-                    Some(id) => {
-                        
-                        if let Some(subscriber_agent_ref) = state.subscribers.clone().get(&id) {
+                    Some(id) => {         
+                        if let Some(subscribers) = state.subscribers.clone().get(&topic) {
                             state.subscribers.remove(&id);
-                            //send ack to session\
-                            let session_agent_ref = where_is(id.clone()).unwrap();
-                            session_agent_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id: id.clone(), topic, result: Ok(()) });
-                            // //kill agent
-
-                            // subscriber_agent_ref.kill();
+                            
+                            where_is(format!("{id}:{topic}")).map_or_else(
+                                || { warn!("Client {id} not subscribed to topic: {topic}")},
+                                |subscriber| {
+                                    subscriber.kill();
+                                });
+                            //send ack
+                            let id_clone = id.clone();
+                            where_is(id).map_or_else(|| { error!("Could not find session for client: {id_clone}")}, |session| {
+                                session.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id: id_clone.clone(), topic, result: Ok(()) }).expect("expected to send ack to session");
+                            });
                         } else {
                             warn!("Session agent {id} not subscribed to topic {topic}");
                             //TODO: determine naming convention for subscriber agents?
@@ -191,6 +194,11 @@ impl Actor for SubscriberAgent {
             Ok(())
     }
 
+    async fn post_stop(&self, myself: ActorRef<Self::Msg>, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        tracing::debug!("Successfully stopped {myself:?}");
+        Ok(())
+    }
+
 
     async fn handle(
         &self,
@@ -215,8 +223,6 @@ impl Actor for SubscriberAgent {
             _ => todo!()
 
         }
-            
-        
         Ok(())
     }
 }

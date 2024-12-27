@@ -207,6 +207,12 @@ impl Actor for SessionAgent {
                 debug!("forwarding susbcribe request for {myself:?}");
                 state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
             },
+            BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
+                state.broker.send_message(BrokerMessage::UnsubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
+            },
+            BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
+                state.client_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result }).expect("Expected to forwrad ack to client");
+            }
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
                 match result {
                     Ok(()) => {

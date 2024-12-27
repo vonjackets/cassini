@@ -172,13 +172,10 @@ impl Listener {
                         warn!("Failed to send message to client {client_id}: {msg:?}");
                     }
                     writer.flush().await.expect("???");
-                }).await.expect("Expected write thread to finish");
-
-                
+                }).await.expect("Expected write thread to finish");   
             }
             Err(e) => error!("{e}")
         }
- 
     }
 }
 #[async_trait]
@@ -204,7 +201,8 @@ impl Actor for Listener {
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         info!("Listener: Listener started for client_id: {}", state.client_id.clone());
 
-        let id= state.client_id.clone();
+        
+        let id= state.client_id.clone(); 
         // TOOD: we need to be able to access state from within the read thread to response to client messages with accuracy. use Arc? Mutex?
         let reader = state.reader.take().expect("Reader already taken!");
         
@@ -224,9 +222,8 @@ impl Actor for Listener {
                                 match msg {
                                     ClientMessage::PingMessage => debug!("PING"),
                                     _ => {
-                                      info!("Received message: {msg:?}");
-                                      
-                                      //TODO: We need to be able to access state here to make sure the registration_id is updated
+                                      debug!("Received message: {msg:?}");
+                                      //convert datatype to broker_meessage, registration_id will be populated in handler
                                       let converted_msg = BrokerMessage::from_client_message(msg, id.clone(), None);
                                       myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
                                     }
@@ -274,17 +271,18 @@ impl Actor for Listener {
             },
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 //confirm listener has registered session
-                match &state.registration_id {
-                    Some(registration_id) => {
-                        debug!("{myself:?} received publish request from client");
-                        where_is(registration_id.clone()).unwrap().send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id.to_owned()), topic, payload }).expect("");
-                    } None => warn!("Client is unregistered, cannot")
-                }
+                if let Some(id) = &state.registration_id {
+
+                    where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
+                    |session| {
+                        session.send_message(BrokerMessage::PublishRequest { registration_id: Some(id.to_string()), topic, payload }).expect("Expected to forward message");
+                    });
+                                                    
+                } else {warn!("Received request from unregistered client!!"); }
             }
             BrokerMessage::PublishResponse { topic, payload, .. } => {
                 info!("Successfully published message to topic: {topic}");
-                let msg = ClientMessage::PublishResponse { topic: topic.clone(), payload: payload.clone(), result: Result::Ok(()) };
-                
+                let msg = ClientMessage::PublishResponse { topic: topic.clone(), payload: payload.clone(), result: Result::Ok(()) };  
                 Listener::write(state.client_id.clone(), msg, Arc::clone(&state.writer)).await;            
             },
 
@@ -298,18 +296,28 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
 
             },
-            BrokerMessage::SubscribeRequest {topic, .. } => {
+            BrokerMessage::SubscribeRequest {topic , ..} => {
                 //Got request to subscribe from client, confirm we've been registered
-                match &state.registration_id {
-                    Some(registration_id) => {
-                        //forward to session
-                        where_is(registration_id.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.to_owned()), topic}).expect("Failed to forward subscribe request to session {registration_id}");
-                    }, None => {
-                        
-                        todo!("Unregistered listener trying to subscribe to topic {topic}, Send 403 type error to client")
-                    }
-                }
+                if let Some(id) = &state.registration_id {
+
+                //forward
+                
+                    where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
+                    |session| {
+                        session.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(id.to_string()), topic }).expect("Expected to forward message");
+                    });
+                
+                                
+                } else {warn!("Received request from unregistered client!!"); }
                
+            },
+            BrokerMessage::UnsubscribeRequest { topic, .. } => {
+                if let Some(id) = &state.registration_id {    
+                    where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
+                    |session| {
+                        session.send_message(BrokerMessage::UnsubscribeRequest { registration_id: Some(id.to_string()), topic }).expect("Expected to forward message");
+                    });
+                } else {warn!("Received request from unregistered client!!"); }
             }
             BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
                 //TODO: log client id instead
@@ -333,7 +341,6 @@ impl Actor for Listener {
 
             }
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
-
             _ => {
                 todo!()
             }

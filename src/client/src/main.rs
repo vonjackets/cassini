@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
@@ -71,7 +72,7 @@ impl Actor for TcpClientActor {
                             match msg {
                                 ClientMessage::PublishResponse { topic, payload, result } => {
                                     //new message on topic
-                                    if let Ok(()) = result {
+                                    if result.is_ok() {
                                         debug!("New message on topic {topic}: {payload}");
                                         //TODO: Forward message to some consumer
                                     } else {
@@ -81,7 +82,7 @@ impl Actor for TcpClientActor {
                                 },
 
                                 ClientMessage::SubscribeAcknowledgment { topic, result } => {
-                                    if let Ok(()) = result {
+                                    if result.is_ok() {
                                         debug!("Successfully subscribed to topic: {topic}");
                                     } else {
                                         warn!("Failed to subscribe to topic: {topic}");
@@ -89,7 +90,7 @@ impl Actor for TcpClientActor {
                                 },
 
                                 ClientMessage::UnsubscribeAcknowledgment { topic, result } => {
-                                    if let Ok(()) = result {
+                                    if result.is_ok() {
                                         debug!("Successfully unsubscribed from topic: {topic}");
                                     } else {
                                         warn!("Failed to unsubscribe from topic: {topic}");
@@ -129,7 +130,7 @@ impl Actor for TcpClientActor {
             TcpClientMessage::Send(broker_msg) => {
                 let str = serde_json::to_string(&broker_msg).unwrap();
                 let msg = format!("{str}\n");
-                
+                debug!("{msg}");
                 let mut writer: tokio::sync::MutexGuard<'_, io::BufWriter<tokio::net::tcp::OwnedWriteHalf>> = state.writer.lock().await;        
                 let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
 
@@ -149,18 +150,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
 
     
-    client.send_after( Duration::from_secs(2), || { 
-        TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
-    });
+        client.send_after( Duration::from_secs(1), || { 
+            TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
+        });
+        client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
         
-    client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
-    client.send_interval(Duration::from_secs(3),
-    || { TcpClientMessage::Send(ClientMessage::PublishRequest { registration_id: None, topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
-    ).await.unwrap();
+        client.send_interval(Duration::from_secs(3),
+        || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
+        );
 
-    
-    handle.await.expect("something happened");
-    
+        client.send_after(Duration::from_secs(5), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
+            
+
+        
+        handle.await.expect("something happened");
     }).await.expect("Keep actor alive");
 
     Ok(())

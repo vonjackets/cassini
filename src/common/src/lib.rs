@@ -92,7 +92,6 @@ pub enum BrokerMessage {
 pub enum ClientMessage {
         /// Publish request from the client.
         PublishRequest {
-            registration_id: Option<String>,
             topic: String,
             payload: String,
         },
@@ -135,7 +134,7 @@ impl BrokerMessage {
             //         client_id,
             //     }
             // },
-            ClientMessage::PublishRequest {registration_id, topic, payload } => {
+            ClientMessage::PublishRequest { topic, payload } => {
                 BrokerMessage::PublishRequest {
                     registration_id,
                     topic,
