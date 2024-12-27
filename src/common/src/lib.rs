@@ -29,7 +29,7 @@ pub enum BrokerMessage {
     },
     /// Publish request from the client.
     PublishRequest {
-        registration_id: Option<String>, //TODO: should this be client id or registration id?
+        registration_id: Option<String>, //TODO: Reemove option, listener checks for registration_id before forwarding
         topic: String,
         payload: String,
     },
@@ -42,7 +42,7 @@ pub enum BrokerMessage {
     /// Subscribe request from the client.
     // This request originates externally, so a registration_id is not added until it is received by the session
     SubscribeRequest {
-        registration_id: Option<String>,
+        registration_id: Option<String>, //TODO: Remove option
         topic: String,
     },
     /// Subscribe acknowledgment to the client.
@@ -53,7 +53,7 @@ pub enum BrokerMessage {
     },
     /// Unsubscribe request from the client.
     UnsubscribeRequest {
-        registration_id: Option<String>,
+        registration_id: Option<String>, //TODO: Remove option
         topic: String,
     },
     /// Unsubscribe acknowledgment to the client.

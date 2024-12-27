@@ -1,9 +1,6 @@
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
-
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
-
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use common::ClientMessage;
@@ -24,7 +21,6 @@ impl TcpClientMessage{
 struct TcpClientState {
     writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
     reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
-    client_id: Option<String>
 }
 
 /// TCP client actor
@@ -37,8 +33,8 @@ impl Actor for TcpClientActor {
     type Arguments = ();
 
     async fn pre_start(&self,
-        myself: ActorRef<Self::Msg>,
-        args: ()) -> Result<Self::State, ActorProcessingErr> {
+        _: ActorRef<Self::Msg>,
+        _: ()) -> Result<Self::State, ActorProcessingErr> {
         info!("TCP Client Actor starting...");
 
         let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
@@ -48,7 +44,7 @@ impl Actor for TcpClientActor {
         
         let writer = tokio::io::BufWriter::new(write_half);
                         
-        let state = TcpClientState { reader: Some(reader), writer: Arc::new(Mutex::new(writer)), client_id: None };
+        let state = TcpClientState { reader: Some(reader), writer: Arc::new(Mutex::new(writer)) };
 
         Ok(state)
     }
@@ -115,7 +111,7 @@ impl Actor for TcpClientActor {
         Ok(())
     }
 
-    async fn post_stop(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_stop(&self, myself: ActorRef<Self::Msg>, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         debug!("Successfully stopped {myself:?}");
         Ok(())
     }

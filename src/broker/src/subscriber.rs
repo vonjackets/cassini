@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
-use tracing::{error, info, warn};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use tracing::{debug, error, info, warn};
 
 use common::BrokerMessage;
 
@@ -14,9 +14,8 @@ pub struct SubscriberManager;
 
 /// Define the state for the actor
 pub struct SubscriberManagerState {
-    subscribers: HashMap<String, Vec<ActorRef<BrokerMessage>>>,  // Map of topics to list of actors subscribed to it
+    subscriptions: HashMap<String, Vec<String>> // Map of topics to list subscriber ids
 }
-
 pub struct SubscriberManagerArgs {
     pub broker_id: String,
 }
@@ -38,7 +37,7 @@ impl Actor for SubscriberManager {
         //link with supervisor
         myself.link(where_is(args.broker_id).unwrap());
         //parse args. if any
-        let state = SubscriberManagerState { subscribers: HashMap::new()};
+        let state = SubscriberManagerState { subscriptions: HashMap::new()};
         Ok(state)
     }
 
@@ -61,52 +60,57 @@ impl Actor for SubscriberManager {
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 tracing::debug!("New message published on topic: {topic}");
                 //Handle ack, a new message was published, alert all subscribed sessions 
-                match state.subscribers.get(&topic).to_owned() {
+                match state.subscriptions.get(&topic).to_owned() {
                     Some(vec) => {
                         for subscriber in vec {
                             tracing::debug!("Notifying subcribers of topic: {topic}");
-                            subscriber.send_message(BrokerMessage::PublishResponse { topic: topic.clone(), payload: payload.clone() , result:result.clone() }).unwrap();
+                            where_is(subscriber.to_string()).map_or_else(| | {
+                                info!("No subscriptions for topic: {topic}");
+                            }, |subscriber| {
+                                subscriber.send_message(BrokerMessage::PublishResponse { topic: topic.clone(), payload: payload.clone() , result:result.clone() }).unwrap();
+                            })
                         }
                     } None => {
                         //No subscribers for this topic, init new vec
-                        state.subscribers.insert(topic, Vec::new());
+                        state.subscriptions.insert(topic, Vec::new());
                     }
                 }
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 match registration_id {
                     Some(registration_id) => {
-                        if state.subscribers.contains_key(&registration_id) {
+                        if state.subscriptions.contains_key(&registration_id) {
                             warn!("Session agent {registration_id} already subscribed to topic {topic}");
                         } else {
                             //TODO: determine naming convention for subscriber agents?
                             // session_id:topic?
-                            let agent_name = format!("{registration_id}:{topic}");
+                            let subscriber_id = format!("{registration_id}:{topic}");
                             let session = ActorRef::from(where_is(registration_id.clone()).unwrap());
                             let args = SubscriberAgentArgs {
                                 registration_id: registration_id.clone(),
                                 session_agent_ref: session.clone()
                             };
-                            let (subscriber_ref, _) = Actor::spawn_linked(Some(agent_name), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {agent_name}");
+                            
+                            Actor::spawn_linked(Some(subscriber_id.clone()), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {subscriber_id}");
                             
                             // add agent to subscriber list for that topic
-                            if let Some(subscribers) = state.subscribers.get(&topic) {
+                            if let Some(subscribers) = state.subscriptions.get(&topic) {
                                 
-                                subscribers.to_owned().push(subscriber_ref.clone());
+                                //Not entirely sure this is the "correct" thing to do if this just appends to a cloned state
+                                subscribers.to_owned().push(subscriber_id.clone());
+
                                 tracing::debug!("Topic {topic} has {0} subscriber(s)", subscribers.len());
                             } else {
                                 //No subscribers, init vec and add subscriber to it
                                 let mut vec = Vec::new();
-                                vec.push(subscriber_ref.clone());
-                                state.subscribers.insert(topic.clone(), vec);
+                                vec.push(subscriber_id.clone());
+                                state.subscriptions.insert(topic.clone(), vec);
                             }
                             
                             //send ack to broker
                             myself.try_get_supervisor().map(|broker| {
                                 broker.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) }).expect("Expected to forward ack to broker");
                             });
-
-                            
                         }                        
                     }, 
                     None => {
@@ -117,14 +121,14 @@ impl Actor for SubscriberManager {
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 match registration_id {
                     Some(id) => {         
-                        if let Some(subscribers) = state.subscribers.clone().get(&topic) {
-                            state.subscribers.remove(&id);
+                        if let Some(_) = state.subscriptions.clone().get(&topic) {
                             
                             where_is(format!("{id}:{topic}")).map_or_else(
                                 || { warn!("Client {id} not subscribed to topic: {topic}")},
                                 |subscriber| {
                                     subscriber.kill();
                                 });
+
                             //send ack
                             let id_clone = id.clone();
                             where_is(id).map_or_else(|| { error!("Could not find session for client: {id_clone}")}, |session| {
@@ -146,6 +150,19 @@ impl Actor for SubscriberManager {
             
         
         Ok(())
+    }
+
+
+    async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        match msg {
+            SupervisionEvent::ActorStarted(_) => Ok(()),
+            SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
+                debug!("Successfully ended subscription.");
+                Ok(())
+            },
+            SupervisionEvent::ActorFailed(actor_cell, error) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
+            SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+        }
     }
 }
 
@@ -214,11 +231,6 @@ impl Actor for SubscriberAgent {
                 //TODO: It's a goal to support resiliency. If we fail to talk to the session for some reason, but aren't told to discard the subscription,
                 // How can we ensure a user who get's disconnected temporarily doesn't lose this subscription?
                 //TODO: Store dead letter queue here in case of failure to send to session?
-            },
-            BrokerMessage::UnsubscribeRequest { .. } => {
-                //This agent uis no longer needed, it should die with honor
-                info!("Stopping {myself:?}");
-                myself.kill();
             },
             _ => todo!()
 
