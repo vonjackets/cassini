@@ -229,13 +229,14 @@ impl Actor for TopicAgent {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
 
+        //TODO: Make way for some message to come in via the broker that tells this actor to update the queue after messages are consumed.
         match message {
             BrokerMessage::PublishRequest{registration_id,topic,payload} => {
                 match registration_id {
                     Some(registration_id) => {
-                        info!(" {myself:?} Recevied message from {0}: {1}",registration_id,payload);
-                        state.queue.push_back(payload.clone());info!("{myself:?} notifying subscribers");
+                        debug!("{myself:?}: New message from {0}: {1}", registration_id, payload);
                         debug!("{topic} queue has {0} message(s) waiting", state.queue.len());
+                        state.queue.push_back(payload.clone());
                         //send ack
                         match myself.try_get_supervisor() {
                             Some(manager) => manager.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) }).expect(""),
@@ -247,10 +248,7 @@ impl Actor for TopicAgent {
                         //TODO: send error message
                     }
                 }
-            },
-            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => todo!(),
-            BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
-            BrokerMessage::ErrorMessage { client_id, error } => todo!(), 
+            }
             _ => {
                 todo!()
             }

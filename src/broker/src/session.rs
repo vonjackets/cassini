@@ -229,7 +229,6 @@ impl Actor for SessionAgent {
                 state.client_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("expected to forward to listener");
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                debug!("forwarding susbcribe request for {myself:?}");
                 state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {

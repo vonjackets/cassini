@@ -143,7 +143,6 @@ impl Actor for Broker {
                 where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::UnsubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward request to subscriber manager");
             }
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
-                info!("Received successful subscribe ack for session: {registration_id}");
                 where_is(registration_id.clone()).map(|session_agent_ref|{
                     session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id.clone(), topic: topic.clone(), result: Ok(()) }).unwrap();
                 });

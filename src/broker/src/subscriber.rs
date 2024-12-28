@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, subscriber, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
 
@@ -67,14 +67,16 @@ impl Actor for SubscriberManager {
                 match state.subscriptions.get(&topic).to_owned() {
                     Some(vec) => {
                         for subscriber in vec {
-                            tracing::debug!("Notifying subcribers of topic: {topic}");
                             where_is(subscriber.to_string()).map_or_else(| | {
-                                info!("No subscriptions for topic: {topic}");
+                                warn!("Could not find subscriber: {subscriber} for topic: {topic}");
                             }, |subscriber| {
                                 subscriber.send_message(BrokerMessage::PublishResponse { topic: topic.clone(), payload: payload.clone() , result:result.clone() }).unwrap();
                             })
                         }
+                        //TODO: Send some kind of message to the topic actors that the messages have been consumed so they can update the queue
+                        
                     } None => {
+                        debug!("No subscriptions for topic: {topic}");
                         //No subscribers for this topic, init new vec
                         state.subscriptions.insert(topic, Vec::new());
                     }
@@ -86,8 +88,6 @@ impl Actor for SubscriberManager {
                         if state.subscriptions.contains_key(&registration_id) {
                             warn!("Session agent {registration_id} already subscribed to topic {topic}");
                         } else {
-                            //TODO: determine naming convention for subscriber agents?
-                            // session_id:topic?
                             let subscriber_id = format!("{registration_id}:{topic}");
                             let session = ActorRef::from(where_is(registration_id.clone()).unwrap());
                             let args = SubscriberAgentArgs {
@@ -98,10 +98,9 @@ impl Actor for SubscriberManager {
                             Actor::spawn_linked(Some(subscriber_id.clone()), SubscriberAgent, args, myself.clone().into()).await.expect("Failed to start subscriber agent {subscriber_id}");
                             
                             // add agent to subscriber list for that topic
-                            if let Some(subscribers) = state.subscriptions.get(&topic) {
+                            if let Some(subscribers) = state.subscriptions.get_mut(&topic) {
                                 
-                                //Not entirely sure this is the "correct" thing to do if this just appends to a cloned state
-                                subscribers.to_owned().push(subscriber_id.clone());
+                                subscribers.push(subscriber_id.clone());
 
                                 tracing::debug!("Topic {topic} has {0} subscriber(s)", subscribers.len());
                             } else {
@@ -125,13 +124,20 @@ impl Actor for SubscriberManager {
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 match registration_id {
                     Some(id) => {         
-                        if let Some(_) = state.subscriptions.clone().get(&topic) {
-                            
-                            where_is(format!("{id}:{topic}")).map_or_else(
-                                || { warn!("Client {id} not subscribed to topic: {topic}")},
+                        if let Some(subscribers) = state.subscriptions.get_mut(&topic) {
+                            let subscriber_name = format!("{id}:{topic}");
+
+                            where_is(subscriber_name.clone()).map_or_else(
+                                || { warn!("Could not find subscriber for client {id}. They may not be subscribed to the topic: {topic}")},
                                 |subscriber| {
                                     subscriber.kill();
                                 });
+                            //TODO: Monitor this approach for effectiveness
+                            match subscribers.binary_search(&subscriber_name) {
+                                Ok(index) => subscribers.remove(index),
+                                Err(e) => todo!("Expected to find index of the subscriber name for client but couldn't, send error message")
+                            };
+
 
                             //send ack
                             let id_clone = id.clone();
@@ -160,12 +166,9 @@ impl Actor for SubscriberManager {
     async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => Ok(()),
-            SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
-                debug!("Successfully ended subscription.");
-                Ok(())
-            },
-            SupervisionEvent::ActorFailed(actor_cell, error) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
-            SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+            SupervisionEvent::ActorTerminated(..) => Ok(()),
+            SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
+            SupervisionEvent::ProcessGroupChanged(..) => todo!(),
         }
     }
 }
