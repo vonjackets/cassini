@@ -191,10 +191,9 @@ impl Actor for Listener {
 
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         info!("Listener: Listener started for client_id: {}", state.client_id.clone());
-
         
         let id= state.client_id.clone(); 
-        // TOOD: we need to be able to access state from within the read thread to response to client messages with accuracy. use Arc? Mutex?
+
         let reader = state.reader.take().expect("Reader already taken!");
         
         //start listening
@@ -230,9 +229,9 @@ impl Actor for Listener {
                     }, 
                     Err(e) => {
                             // Handle client disconnection, die with honor for now
-                            //TOOD: Handle in listenermanager when this listener dies
+                            //TODO: Handle in listenermanager when this listener dies
                             myself.send_message(BrokerMessage::DisconnectRequest { client_id: id.clone() }).unwrap();
-                            warn!("Client disconnected: {e}");
+                            warn!("Client {id} disconnected: {e}");
                             
                             myself.kill();
                     }

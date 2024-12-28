@@ -10,7 +10,8 @@ use tracing::{debug, error, info, warn};
 /// Messages handled by the TCP client actor
 pub enum TcpClientMessage {
     Send(ClientMessage),
-    // RegistrationResponse(client_id),
+    RegistrationResponse(String),
+    ErrorMessage(String),
 }
 
 impl TcpClientMessage{
@@ -81,13 +82,12 @@ impl Actor for TcpClientActor {
                 while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
                     if bytes == 0 { () } else {
                         if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
-                            //TODO: Figure out how to either manage state when handling client messages, or refactor
-                            // to use Actor trait to handle them
-                            // myself.send_message(msg).expect("Could not forward message to {myself:?}");
+                            
                             match msg {
                                 ClientMessage::RegistrationResponse { registration_id, success, error } => {
                                     if success {
                                         info!("Successfully began session with id: {registration_id}");
+                                        myself.send_message(TcpClientMessage::RegistrationResponse(registration_id)).expect("Could not forward message to {myself:?");
                                         
                                     } else {
                                         warn!("Failed to register session with the server. {error:?}");
@@ -158,6 +158,10 @@ impl Actor for TcpClientActor {
 
                 writer.flush().await.expect("Expected buffer to get flushed");
             }
+            TcpClientMessage::RegistrationResponse(registration_id) => state.registration_id = Some(registration_id),
+            _ => todo!()
+                
+                
         }
         Ok(())
     }
@@ -176,16 +180,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ClientMessage::RegistrationRequest { registration_id: None }
         )).unwrap();
 
-        // client.send_after( Duration::from_secs(1), || { 
-        //     TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
-        // });
-        // client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
+        client.send_after( Duration::from_secs(1), || { 
+            TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
+        });
+        client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
         
-        // client.send_interval(Duration::from_secs(3),
-        // || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
-        // );
+        client.send_interval(Duration::from_secs(3),
+        || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
+        );
 
-        // client.send_after(Duration::from_secs(5), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
+        client.send_after(Duration::from_secs(10), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
             
 
         
