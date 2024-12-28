@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = tokio::spawn(async move {
         //TODO: populate bind_addr from config
-        let (client, handle) = Actor::spawn(None, TcpClientActor, TcpClientArgs {bind_addr: "127.0.0.1".to_owned(), registration_id: None}).await.expect("Failed to start client actor");
+        let (client, handle) = Actor::spawn(None, TcpClientActor, TcpClientArgs {bind_addr: "127.0.0.1:8080".to_owned(), registration_id: None}).await.expect("Failed to start client actor");
 
         //Client needs to register with broker before it can send any messages
         client.send_message(TcpClientMessage::Send(
