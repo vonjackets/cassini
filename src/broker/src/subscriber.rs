@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{debug, error, info, warn};
 
-use common::BrokerMessage;
+use common::{BrokerMessage, BROKER_NAME};
 
 /// Our supervisor for the subscribers
 /// When a user subscribes to a new topic, this actor is notified inb conjunction with the topic manager.
@@ -35,7 +35,11 @@ impl Actor for SubscriberManager {
         tracing::debug!("{myself:?} starting");
 
         //link with supervisor
-        myself.link(where_is(args.broker_id).unwrap());
+        
+        match where_is(BROKER_NAME.to_string()) {
+            Some(broker) => myself.link(broker),
+            None => todo!()
+        }
         //parse args. if any
         let state = SubscriberManagerState { subscriptions: HashMap::new()};
         Ok(state)

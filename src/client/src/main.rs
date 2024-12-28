@@ -5,7 +5,7 @@ use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use common::ClientMessage;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Messages handled by the TCP client actor
 pub enum TcpClientMessage {
@@ -21,11 +21,28 @@ impl TcpClientMessage{
 struct TcpClientState {
     writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
     reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    registration_id: Option<String>
 }
 
 /// TCP client actor
 struct TcpClientActor;
-
+impl TcpClientActor {
+    async fn write(msg: ClientMessage, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
+        match serde_json::to_string(&msg) {
+            Ok(serialized) => {
+                tokio::spawn( async move {
+                    let mut writer = writer.lock().await;
+                    let msg = format!("{serialized}\n"); //add newline
+                    if let Err(e) = writer.write_all(msg.as_bytes()).await {
+                        warn!("Failed to send message to server {msg:?}");
+                    }
+                    writer.flush().await.expect("???");
+                }).await.expect("Expected write thread to finish");   
+            }
+            Err(e) => error!("{e}")
+        }
+    }
+}
 #[async_trait]
 impl Actor for TcpClientActor {
     type Msg = TcpClientMessage;
@@ -44,7 +61,7 @@ impl Actor for TcpClientActor {
         
         let writer = tokio::io::BufWriter::new(write_half);
                         
-        let state = TcpClientState { reader: Some(reader), writer: Arc::new(Mutex::new(writer)) };
+        let state = TcpClientState { reader: Some(reader), writer: Arc::new(Mutex::new(writer)), registration_id: None };
 
         Ok(state)
     }
@@ -64,8 +81,19 @@ impl Actor for TcpClientActor {
                 while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
                     if bytes == 0 { () } else {
                         if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
-                            // handle publish responses containing new data
+                            //TODO: Figure out how to either manage state when handling client messages, or refactor
+                            // to use Actor trait to handle them
+                            // myself.send_message(msg).expect("Could not forward message to {myself:?}");
                             match msg {
+                                ClientMessage::RegistrationResponse { registration_id, success, error } => {
+                                    if success {
+                                        info!("Successfully began session with id: {registration_id}");
+                                        
+                                    } else {
+                                        warn!("Failed to register session with the server. {error:?}");
+                                        //TODO: Retry?
+                                    }
+                                },
                                 ClientMessage::PublishResponse { topic, payload, result } => {
                                     //new message on topic
                                     if result.is_ok() {
@@ -92,8 +120,6 @@ impl Actor for TcpClientActor {
                                         warn!("Failed to unsubscribe from topic: {topic}");
                                     }  
                                 },
-
-                                ClientMessage::PongMessage => todo!(),
                                 _ => {
                                     warn!("Unexpected message {buf}");
                                 }
@@ -145,17 +171,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = tokio::spawn(async move {
         let (client, handle) = Actor::spawn(None, TcpClientActor, ()).await.expect("Failed to start client actor");
 
-    
-        client.send_after( Duration::from_secs(1), || { 
-            TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
-        });
-        client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
-        
-        client.send_interval(Duration::from_secs(3),
-        || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
-        );
+        //Client needs to register with broker before it can send any messages
+        client.send_message(TcpClientMessage::Send(
+            ClientMessage::RegistrationRequest { registration_id: None }
+        )).unwrap();
 
-        client.send_after(Duration::from_secs(5), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
+        // client.send_after( Duration::from_secs(1), || { 
+        //     TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
+        // });
+        // client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
+        
+        // client.send_interval(Duration::from_secs(3),
+        // || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
+        // );
+
+        // client.send_after(Duration::from_secs(5), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
             
 
         

@@ -88,14 +88,14 @@ impl Actor for Broker {
                  None => todo!()
                 }
             }
-            SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
+            SupervisionEvent::ActorTerminated(actor_cell, ..) => {
                 
                 //determine type of actor that failed and restart
                 //NOTE: "Remote" actors can't have their types checked? But they do send serializable messages
                 // If we can deserialize them to a datatype here, that may be another acceptable means of determining type
                 if let Some(_) = actor_cell.is_message_type_of::<BrokerMessage>() {
                     info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
-                    //start new actor
+                    //TODO: Start new actor in its own thread as to not interrupt this one
                 }
                 
             }
@@ -121,38 +121,14 @@ impl Actor for Broker {
     ) -> Result<(), ActorProcessingErr> {
         //TODO: Implement? The master node seems purely responsible for managing actor lifecycles, doesn't really do any message brokering on its own
         match message {
-            BrokerMessage::RegistrationRequest { client_id } => {
-                //The listenerManager forwarded the request, generate a new ID to serve as their identifier for internal purposes
-                //TODO: Is there any reason we'd fail at this point? User can authenticate but isn't authroized?
-                info!("Registering client {client_id}");
-
-                // Send RegistrationResponse to SessionManager 
-                
+            BrokerMessage::RegistrationRequest { registration_id, client_id } => {                
                 match &state.session_manager
                 {
                     Some(session_mgr) => {
-                        session_mgr.send_message(BrokerMessage::RegistrationRequest { client_id: client_id.clone() }).expect("Failed to forward registration response to listener manager");
+                        session_mgr.send_message(BrokerMessage::RegistrationRequest { registration_id, client_id }).expect("Failed to forward registration response to listener manager");
                     }, 
                     None => todo!()
                 }
-            },
-            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
-                //Use enum type as a confirmation that session agent has started, all comms between clients and the broker should now flow through the session agent
-                info!("Session started for client: {client_id}");
-                match &state.listener
-                {
-                    Some(listener) => {
-                        listener.send_message(BrokerMessage::RegistrationResponse {
-                            registration_id: registration_id.clone(),
-                            client_id: client_id.clone(),
-                            success: true, 
-                            error: None 
-                        })
-                        .expect("Failed to forward registration response to listener manager");
-                    }, 
-                    None => todo!()
-                }
-                
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");

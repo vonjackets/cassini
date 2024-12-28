@@ -4,6 +4,7 @@ use tracing::warn;
 
 //TODO: Standardize logging messages 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
+pub const BROKER_NAME: &str = "BROKER_SUPERVISOR";
 pub const LISTENER_MANAGER_NAME: &str = "LISTENER_MANAGER";
 
 pub const SESSION_MANAGER_NAME: &str = "SESSION_MANAGER";
@@ -16,9 +17,13 @@ pub const SUBSCRIBER_MANAGER_NAME: &str = "SUBSCRIBER_MANAGER";
 #[derive(Debug)]
 pub enum BrokerMessage {
     /// Registration request from the client.
+    /// When a client connects over TCP, it cannot send messages until it receives a registrationID and a session has been created for it
+    /// In the event of a disconnect, a client should be able to either resume their session by providing that registration ID, or
+    /// have a new one assigned to it by sending an empty registration request
     RegistrationRequest {
     //Id for a new, potentially unauthenticated/unauthorized client client
-    client_id: String,
+    registration_id: Option<String>,
+    client_id: String
     },
     /// Registration response to the client after attempting registration
     RegistrationResponse {
@@ -85,11 +90,19 @@ pub enum BrokerMessage {
     }
 }
 
-///External Messagetypes for client comms
+///External Messages for client comms
 /// These messages are serialized/deserialized to/from JSON
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
+        RegistrationRequest {
+            registration_id: Option<String>,
+        },
+        RegistrationResponse {
+            registration_id: String, //new and final id for a client successfully registered
+            success: bool,
+            error: Option<String>, // Optional error message if registration failed
+        },
         /// Publish request from the client.
         PublishRequest {
             topic: String,
@@ -119,7 +132,6 @@ pub enum ClientMessage {
             topic: String,
             result: Result<(), String>
        },
-        /// 
         /// Ping message to the client to check connectivity.
         PingMessage,
         /// Pong message received from the client in response to a ping.
@@ -129,11 +141,12 @@ pub enum ClientMessage {
 impl BrokerMessage {
     pub fn from_client_message(msg: ClientMessage, client_id: String, registration_id: Option<String>) -> Self {
         match msg {
-            // ClientMessage::RegistrationRequest { client_id: _ } => {
-            //     BrokerMessage::RegistrationRequest {
-            //         client_id,
-            //     }
-            // },
+            ClientMessage::RegistrationRequest { registration_id } => {
+                BrokerMessage::RegistrationRequest {
+                    registration_id,
+                    client_id,
+                }
+            },
             ClientMessage::PublishRequest { topic, payload } => {
                 BrokerMessage::PublishRequest {
                     registration_id,
