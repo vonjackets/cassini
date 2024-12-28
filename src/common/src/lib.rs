@@ -1,6 +1,4 @@
-use ractor::RpcReplyPort;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 //TODO: Standardize logging messages 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
@@ -27,7 +25,7 @@ pub enum BrokerMessage {
     },
     /// Registration response to the client after attempting registration
     RegistrationResponse {
-        registration_id: String, //new and final id for a client successfully registered
+        registration_id: Option<String>, //new and final id for a client successfully registered
         client_id: String,
         success: bool,
         error: Option<String>, // Optional error message if registration failed
@@ -86,7 +84,8 @@ pub enum BrokerMessage {
         registration_id: String,
     },
     TimeoutMessage {
-        registration_id: String, //name of the session agent that died
+        registration_id: Option<String>, //name of the session agent that died
+        error: Option<String>
     }
 }
 
@@ -135,7 +134,11 @@ pub enum ClientMessage {
         /// Ping message to the client to check connectivity.
         PingMessage,
         /// Pong message received from the client in response to a ping.
-        PongMessage
+        PongMessage,
+        ///Disconnect intentionally with a client_id
+        DisconnectRequest(String),
+        ///Mostly for testing purposes, intentional timeout message with a client_id
+        TimeoutMessage(String)
 }
 
 impl BrokerMessage {
@@ -167,12 +170,13 @@ impl BrokerMessage {
                 }
             },
             
-            // ClientMessage::DisconnectRequest { client_id } => {
-            //     BrokerMessage::DisconnectRequest {
-            //         registration_id: None,
-            //         client_id
-            //     }
-            // },
+            ClientMessage::DisconnectRequest(client_id) => {
+                BrokerMessage::DisconnectRequest {
+                    client_id
+                }
+            },
+            ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { registration_id: Some(registration_id), error: None },
+            
             // ClientMessage::PingMessage { client_id } => {
             //     BrokerMessage::PingMessage { client_id }
             // },

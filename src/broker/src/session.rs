@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{async_trait, registry::{registered, where_is}, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -22,6 +23,7 @@ pub struct Session {
 /// Define the state for the actor
 pub struct SessionManagerState {
     sessions: HashMap<String, Session>,           // Map of registration_id to Session ActorRefesses
+    timeout_handle: Option<JoinHandle<()>>
 }
 
 pub struct SessionManagerArgs {
@@ -54,6 +56,7 @@ impl Actor for SessionManager {
         //parse args. if any
         let state = SessionManagerState {
             sessions: HashMap::new(),
+            timeout_handle: None
         };
 
         Ok(state)
@@ -99,6 +102,24 @@ impl Actor for SessionManager {
                 }   
                 
             }
+            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
+                //A client has (re)registered. Cancel timeout thread
+                if let Some(registration_id) = registration_id {
+                    match where_is(registration_id.clone()) {
+                        Some(session) => {
+                            if let Some(handle) = &state.timeout_handle {
+                                info!("Aborting session cleanup for {registration_id}");
+                                handle.abort();
+                                state.timeout_handle = None
+                            }
+                        }, None => {
+                            warn!("No session found for id {registration_id}");   
+                        }
+                    }
+                } else {
+                    warn!("Received registration response from unknown client: {client_id}");
+                }
+            }
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 //forward to broker
                 match myself.try_get_supervisor() {
@@ -114,10 +135,21 @@ impl Actor for SessionManager {
                 session.ping_count = 0;
                 session.agent_ref.send_message(BrokerMessage::PongMessage { registration_id: registration_id.clone() }).expect("Failed to send pong message to session {registration_id}");
             }
-            BrokerMessage::TimeoutMessage { registration_id } => {
-               warn!("Session {registration_id} timed out due to missed pings");
+            BrokerMessage::TimeoutMessage { registration_id, error } => {
+               warn!("Session {registration_id:?} timing out, waiting for reconnect...");
                //send disconnect to listenermgr
-                let session = state.sessions.get_mut(&registration_id).expect("Failed to lookup session for id: {registration_id}");
+                registration_id.map_or_else(|| {}, |registration_id| {
+                state.sessions.get_mut(&registration_id).expect("Failed to lookup session for id: {registration_id}");
+                //wait 90 seconds before killing session
+                // Spawn a new thread for the timer
+                let timer_handle = tokio::spawn(async move {
+                    // Sleep for 90 seconds
+                    tokio::time::sleep(Duration::from_secs(90));
+                    
+                });
+
+                state.timeout_handle = Some(timer_handle);
+                });
                 
 
             }, _ => {
@@ -182,7 +214,7 @@ impl Actor for SessionAgent {
 
         //send ack to client listener
        state.client_ref.send_message(BrokerMessage::RegistrationResponse { 
-            registration_id,
+            registration_id: Some(registration_id),
             client_id,
             success: true,
             error: None 
@@ -200,18 +232,23 @@ impl Actor for SessionAgent {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
         match message {
-            BrokerMessage::RegistrationResponse { registration_id, client_id, .. } => {
+            BrokerMessage::RegistrationRequest { registration_id, client_id, .. } => {
                 //A previously dropped connection has been reestablished, update state to send messages to new listener actor
                 match where_is(client_id.clone()) {
                     Some(listener) => {
                         state.client_ref = ActorRef::from(listener);
                         //ack
                         state.client_ref.send_message(BrokerMessage::RegistrationResponse {
-                            registration_id,
-                            client_id,
+                            registration_id: registration_id.clone(),
+                            client_id: client_id.clone(),
                             success: true,
                             error: None })
                         .expect("Expected to send ack to listener");
+                    // Alert session manager that our client is back so it doesn't kill the actor
+                        match myself.try_get_supervisor() {
+                            Some(manager) => manager.send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success: true , error: None }).expect("Expected to send message to manager"),
+                            None => todo!()
+                        }
                     } None => {
                         warn!("Could not find listener for client: {client_id}");
                         //TODO
@@ -263,7 +300,12 @@ impl Actor for SessionAgent {
                 //client disconnected, clean up after it then die with honor
                 debug!("client {client_id} disconnected");
                 myself.kill();
-            
+            }
+            BrokerMessage::TimeoutMessage { registration_id, error } => {
+                match myself.try_get_supervisor() {
+                    Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage { registration_id, error }).expect("Expected to forward to manager"),
+                    None=> todo!()
+                }
             }
             _ => {
                 todo!()

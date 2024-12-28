@@ -1,5 +1,5 @@
 [package]
-name = "cassini-client"
+name = "cassini_client"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,5 +15,5 @@ common = { path = "../common" }
 async-trait = "0.1.83"
 ractor = { version="0.14.1"}
 [[bin]]
-name="cassin-client"
+name="cassini-client"
 path="src/main.rs"

@@ -170,11 +170,11 @@ impl Actor for Broker {
                 warn!("Error Received: {error}");
             },
             BrokerMessage::PongMessage { registration_id } => todo!(),
-            BrokerMessage::TimeoutMessage { registration_id } => {
-                warn!("Received timeout for registration ID: {registration_id}");                
-                //tell listener mgr to handle business
-                state.listener.as_ref().unwrap().send_message(BrokerMessage::TimeoutMessage { registration_id }).expect("Failed to forward timeout message to listener manager");
-            }
+            // BrokerMessage::TimeoutMessage { registration_id, error } => {
+            //     warn!("Received timeout for registration ID: {registration_id}");                
+            //     //tell listener mgr to handle business
+            //     state.listener.as_ref().unwrap().send_message(BrokerMessage::TimeoutMessage { registration_id }).expect("Failed to forward timeout message to listener manager");
+            // }
             _ => todo!()
         }
         Ok(())

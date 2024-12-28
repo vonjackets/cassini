@@ -1,7 +1,7 @@
 #![allow(clippy::incompatible_msrv)]
-use cassini_server::{init_logging, broker::Broker};
+use cassini_server::broker::Broker;
 
-use common::BROKER_NAME;
+use common::{init_logging, BROKER_NAME};
 use ractor::Actor;
 
 

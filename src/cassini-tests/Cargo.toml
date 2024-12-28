@@ -1,0 +1,11 @@
+[package]
+name = "cassini_tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+cassini_server = {path = "../broker"}
+cassini_client = {path = "../client"}
+ractor = { version="0.14.1"}
+tokio = { version = "1.30", features = ["full"] }

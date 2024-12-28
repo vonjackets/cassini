@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = [
-    "broker",
-    "client", "common",
+    "broker", "cassini-tests",
+    "client", 
+    "common",
 ]

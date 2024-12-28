@@ -36,7 +36,7 @@ impl Actor for ListenerManager {
         //link with supervisor
         match where_is(BROKER_NAME.to_string()) {
             Some(broker) => myself.link(broker),
-            None => todo!()
+            None => warn!("Couldn't link with broker supervisor!")
         }
         //set up state object
         let state = ListenerManagerState { listeners: HashMap::new() };
@@ -93,7 +93,8 @@ impl Actor for ListenerManager {
                 
             }
             SupervisionEvent::ActorTerminated(actor_cell, ..) => {
-                //TODO: Getting here means a connection died, forward a message to the broker/sessionMgr
+                //TODO: Getting here means a connection died, forward a message to thje broker via the session manager
+                
                 info!("Worker agent: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
                 state.listeners.remove(&actor_cell.get_name().unwrap());
                 
@@ -228,12 +229,9 @@ impl Actor for Listener {
                         }    
                     }, 
                     Err(e) => {
-                            // Handle client disconnection, die with honor for now
-                            //TODO: Handle in listenermanager when this listener dies
-                            myself.send_message(BrokerMessage::DisconnectRequest { client_id: id.clone() }).unwrap();
+                            // Handle client disconnection, populate state in handler
+                            myself.send_message(BrokerMessage::TimeoutMessage { registration_id: None, error: Some(e.to_string()) } ).unwrap();
                             warn!("Client {id} disconnected: {e}");
-                            
-                            myself.kill();
                     }
                 } 
             }
@@ -261,7 +259,7 @@ impl Actor for Listener {
                     match where_is(registration_id.clone()) {
                         Some(session) => {
                             session.send_message(BrokerMessage::RegistrationResponse {
-                                registration_id,
+                                registration_id: Some(registration_id),
                                 client_id, success: true,
                                 error: None }).expect("Expected to send new client_id to new session");
                         }, None => {error!("Could not find valid session with id {registration_id} for client: {client_id}") }
@@ -280,11 +278,11 @@ impl Actor for Listener {
             }
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 if success {
-                    debug!("Successfully registered with id: {registration_id}");
-                    state.registration_id = Some(registration_id.clone());
+                    debug!("Successfully registered with id: {registration_id:?}");
+                    state.registration_id = registration_id.clone();
                     
                     Listener::write(client_id.clone(), ClientMessage::RegistrationResponse {
-                        registration_id,
+                        registration_id: registration_id.unwrap_or_default(),
                         success: true,
                         error: None 
                     }, Arc::clone(&state.writer)).await;
@@ -317,7 +315,7 @@ impl Actor for Listener {
                 let response = ClientMessage::SubscribeAcknowledgment {
                     topic, result: Result::Ok(())
                 };
-                //forward to client
+                
                 
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
 
@@ -326,7 +324,7 @@ impl Actor for Listener {
                 //Got request to subscribe from client, confirm we've been registered
                 if let Some(id) = &state.registration_id {
 
-                //forward
+                
                 
                     where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
                     |session| {
@@ -355,16 +353,26 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
             BrokerMessage::DisconnectRequest { client_id } => {
-                //forward
+                info!("Received disconnect request from client: {client_id}");
                 //if we're registered, propogate to session agent, otherwise, die with honor
                 match &state.registration_id {
                     Some(id) => {
-                        where_is(id.to_string()).unwrap().send_message(BrokerMessage::DisconnectRequest { client_id: state.client_id.clone() }).unwrap();
+                        where_is(id.to_string()).unwrap().send_message(BrokerMessage::DisconnectRequest { client_id }).unwrap();
                     }
                     _ => ()
                 }
                 myself.kill();
 
+            }
+            BrokerMessage::TimeoutMessage { error, .. } => {
+                //Client timed out, if we were registered, let session know, otherwise, die with honor
+                match &state.registration_id {
+                    Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
+                        session.send_message(BrokerMessage::TimeoutMessage { registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
+                     }),
+                    _ => ()
+                }
+                myself.kill()
             }
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
             _ => {
