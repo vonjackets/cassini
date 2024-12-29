@@ -92,15 +92,15 @@ impl Actor for ListenerManager {
                 state.listeners.insert(client_id.clone(), listener_ref.clone());
                 
             }
-            SupervisionEvent::ActorTerminated(actor_cell, ..) => {
+            SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
                 //TODO: Getting here means a connection died, forward a message to thje broker via the session manager
                 
-                info!("Worker agent: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
+                info!("Worker agent: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
                 state.listeners.remove(&actor_cell.get_name().unwrap());
                 
             }
             SupervisionEvent::ActorFailed(actor_cell, _) => {
-                warn!("Worker agent: {0:?}:{1:?}failed!", actor_cell.get_name(), actor_cell.get_id());
+                warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
             },
             SupervisionEvent::ProcessGroupChanged(_) => todo!(),
         }
@@ -121,6 +121,13 @@ impl Actor for ListenerManager {
                 where_is(client_id.clone()).unwrap().send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success, error }).expect("Failed to forward message to client: {client_id}");
                 
             },
+            BrokerMessage::TimeoutMessage { client_id, ..} => {
+                match where_is(client_id.clone()) {
+                    Some(listener) => listener.stop(Some("TIMEDOUT".to_string())),
+                    None => warn!("Couldn't find listener {client_id}")
+                }
+                
+            }
             _ => {
                 todo!()
             }
@@ -230,7 +237,7 @@ impl Actor for Listener {
                     }, 
                     Err(e) => {
                             // Handle client disconnection, populate state in handler
-                            myself.send_message(BrokerMessage::TimeoutMessage { registration_id: None, error: Some(e.to_string()) } ).unwrap();
+                            myself.send_message(BrokerMessage::TimeoutMessage { client_id: String::default(), registration_id: None, error: Some(e.to_string()) } ).unwrap();
                             warn!("Client {id} disconnected: {e}");
                     }
                 } 
@@ -252,19 +259,31 @@ impl Actor for Listener {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id } => {
-                //If we got some registration id here, try to find the active session and reconnect,
-                // Otherwise, forward to broker to begin creating new session and wait for response.
-                if let Some(registration_id) = registration_id {
-                    //send message to session that it has a new listener for it to get messages from
-                    match where_is(registration_id.clone()) {
-                        Some(session) => {
-                            session.send_message(BrokerMessage::RegistrationResponse {
-                                registration_id: Some(registration_id),
-                                client_id, success: true,
-                                error: None }).expect("Expected to send new client_id to new session");
-                        }, None => {error!("Could not find valid session with id {registration_id} for client: {client_id}") }
+                // If we got some registration id here, 
+                // try to find the active session and reconnect,
+
+                if registration_id.is_some() && state.registration_id.is_some() {
+                    let id_in = registration_id.unwrap();
+                    let session_id = &state.registration_id.clone().unwrap();
+
+
+                    if id_in == session_id.to_owned() {
+                        //send message to session that it has a new listener for it to get messages from
+                        match where_is(session_id.clone()) {
+                            Some(session) => {
+                                info!("Resuming session: {session_id}!");
+                                session.send_message(
+                                    BrokerMessage::RegistrationRequest {
+                                    registration_id: Some(session_id.to_owned()), client_id
+                                })
+                                .expect("Expected to send new client_id to new session");
+
+                            }, None => {error!("Could not find session with id {session_id} for client: {client_id}") }
+                        }
                     }
                 } else {
+                    // Forward to broker to begin creating new session and wait for response.
+                    info!("Starting new session!");
                     match where_is(BROKER_NAME.to_string()) {
                         Some(broker) => {
                             broker.send_message(BrokerMessage::RegistrationRequest { registration_id: None, client_id: myself.get_name().unwrap_or_default() })
@@ -364,15 +383,17 @@ impl Actor for Listener {
                 myself.kill();
 
             }
-            BrokerMessage::TimeoutMessage { error, .. } => {
+            BrokerMessage::TimeoutMessage {error, .. } => {
                 //Client timed out, if we were registered, let session know, otherwise, die with honor
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                        session.send_message(BrokerMessage::TimeoutMessage { registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
+                        
+                        session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
                      }),
                     _ => ()
                 }
-                myself.kill()
+                //TODO: Do something productive instead of falling on ones sword. Enter reconnect loop that tries 1-3 times before giving up?
+                // myself.kill()
             }
             BrokerMessage::ErrorMessage { client_id, error } => todo!(),
             _ => {

@@ -170,17 +170,25 @@ impl Actor for Broker {
                 warn!("Error Received: {error}");
             },
             BrokerMessage::PongMessage { registration_id } => todo!(),
-            BrokerMessage::TimeoutMessage { registration_id, error } => {
+            BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 //cleanup subscribers
-                debug!("Notifying subscriber manager client {registration_id:?} timed out");
+                
                 if let Some(manager) = &state.subscriber_manager {
                     manager.send_message(BrokerMessage::TimeoutMessage {
-                        registration_id,
-                        error
+                        client_id: client_id.clone(),
+                        registration_id: registration_id.clone(),
+                        error: error.clone()
                     }).expect("Expected to forward message");
                     
                 }
-                
+                // Tell listener manager to kill listener, it's not coming back
+                if let Some(manager) = &state.listener {
+                    manager.send_message(BrokerMessage::TimeoutMessage {
+                        client_id: client_id.clone(),
+                        registration_id,
+                        error
+                    }).expect("Expected to forward message");
+                }
                 
             }
             _ => todo!()

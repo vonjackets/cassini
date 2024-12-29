@@ -84,6 +84,7 @@ pub enum BrokerMessage {
         registration_id: String,
     },
     TimeoutMessage {
+        client_id: String,
         registration_id: Option<String>, //name of the session agent that died
         error: Option<String>
     }
@@ -175,7 +176,7 @@ impl BrokerMessage {
                     client_id
                 }
             },
-            ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { registration_id: Some(registration_id), error: None },
+            ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { client_id, registration_id: Some(registration_id), error: None },
             
             // ClientMessage::PingMessage { client_id } => {
             //     BrokerMessage::PingMessage { client_id }

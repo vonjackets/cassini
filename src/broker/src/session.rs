@@ -1,7 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, hash::Hash, time::Duration};
 
 use ractor::{async_trait, registry::{registered, where_is}, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -27,7 +28,7 @@ pub struct SessionManagerState {
     //TODO: add list of timer handles, more than one session can be at risk of timing out
     ///Map of sessions at risk of timing out at any given time
     //timeout_handles: HashMap<String, JoinHandle<()>> 
-    timeout_handle: Option<JoinHandle<()>> 
+    cancellation_tokens: HashMap<String, CancellationToken>,
 }
 
 pub struct SessionManagerArgs {
@@ -60,7 +61,7 @@ impl Actor for SessionManager {
         //parse args. if any
         let state = SessionManagerState {
             sessions: HashMap::new(),
-            timeout_handle: None
+            cancellation_tokens: HashMap::new()
         };
 
         Ok(state)
@@ -70,7 +71,7 @@ impl Actor for SessionManager {
         //link with supervisor
         match where_is(BROKER_NAME.to_string()) {
             Some(broker) => myself.link(broker),
-            None => todo!()
+            None => warn!("Couldn't link with broker supervisor")
         }
         
   
@@ -108,13 +109,14 @@ impl Actor for SessionManager {
             }
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 //A client has (re)registered. Cancel timeout thread
+                // debug!("SessionManager: Alerted of session registration");
                 if let Some(registration_id) = registration_id {
                     match where_is(registration_id.clone()) {
-                        Some(session) => {
-                            if let Some(handle) = &state.timeout_handle {
-                                info!("Aborting session cleanup for {registration_id}");
-                                handle.abort();
-                                state.timeout_handle = None
+                        Some(_) => {
+                            if let Some(token) = &state.cancellation_tokens.get(&registration_id) {
+                                debug!("Aborting session cleanup for {registration_id}");
+                                token.cancel();
+                                state.cancellation_tokens.remove(&registration_id);
                             }
                         }, None => {
                             warn!("No session found for id {registration_id}");   
@@ -129,7 +131,7 @@ impl Actor for SessionManager {
                 match myself.try_get_supervisor() {
                     Some(broker)=> {
                         broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
-                    }, None => todo!()
+                    }, None => warn!("Couldn't find broker supervisor")
                 }
             }
             BrokerMessage::PingMessage { registration_id, client_id } => {
@@ -139,39 +141,49 @@ impl Actor for SessionManager {
                 session.ping_count = 0;
                 session.agent_ref.send_message(BrokerMessage::PongMessage { registration_id: registration_id.clone() }).expect("Failed to send pong message to session {registration_id}");
             }
-            BrokerMessage::TimeoutMessage { registration_id, error } => {
+            BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                warn!("Session {registration_id:?} timing out, waiting for reconnect...");
                //send disconnect to listenermgr
                 if let Some(registration_id) = registration_id {
                     let session = state.sessions.get(&registration_id).expect("Failed to lookup session for id: {registration_id}");
                     let ref_clone = session.agent_ref.clone();
-                    //wait 90 seconds before killing session
-                    // Spawn a new thread for the timer
+                    
+                    let token = CancellationToken::new();
+                    
+                    state.cancellation_tokens.insert(registration_id.clone(), token.clone());
 
-                    let timer_handle = tokio::spawn(async move {
-                        // Sleep for 90 seconds
-                        //TODO: Make wait time configurable?
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        warn!("Session {registration_id} timed out");
-                        // Forward a timeout message to the broker to be forwarded to other managers
-                        match myself.try_get_supervisor() {
-                            Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage {
-                                registration_id: Some(registration_id),
-                                error })
-                                .expect("Expected to forward to manager"),
+                    let timer = tokio::spawn(async move {
+                        tokio::select! {
+                            // Step 3: Using cloned token to listen to cancellation requests
+                            _ = token.cancelled() => {
+                                // The timer was cancelled, task can shut down
+                            }
+                            //wait 90 seconds before killing session
+                            //TODO: Make configurable the amount of time we wait here, currently need to manually edit for testing purposes
+                            // Spawn a new thread for the timer
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                                match myself.try_get_supervisor() {
+                                    Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage {
+                                        client_id,
+                                        registration_id: Some(registration_id),
+                                        error })
+                                        .expect("Expected to forward to manager"),
 
-                            None => todo!("Respond to the broker being missing")
+                                    None => warn!("Respond to the broker being missing")
+                                }
+                                ref_clone.stop(Some("TIMEDOUT".to_string())); //wait for other parts of the broker to cleanup
+                            
+                            }
                         }
-                        ref_clone.kill();
-                        //TODO: If a session timed out or died, cleanup after it. 
                     });
+                    
 
 
                 }
                 
 
             }, _ => {
-                todo!()
+                warn!("Received unexecpted message: {message:?}");
             }
         }
         Ok(())
@@ -179,14 +191,12 @@ impl Actor for SessionManager {
 
     async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
-            SupervisionEvent::ActorStarted(actor_cell) => {
-                ()
-            },
-            SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
-                debug!("Session: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
+            SupervisionEvent::ActorStarted(_) => (),
+            SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
+                debug!("Session: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
             },
             SupervisionEvent:: ActorFailed(actor_cell, error) => warn!("Worker agent: {0:?}:{1:?} failed! {error}", actor_cell.get_name(), actor_cell.get_id()),
-            SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+            SupervisionEvent::ProcessGroupChanged(_) => (),
         }
         Ok(())
     }
@@ -254,27 +264,39 @@ impl Actor for SessionAgent {
                 //A previously dropped connection has been reestablished, update state to send messages to new listener actor
                 match where_is(client_id.clone()) {
                     Some(listener) => {
+                        
                         state.client_ref = ActorRef::from(listener);
                         //ack
+                        debug!("Re-established comms with client {client_id}");
                         state.client_ref.send_message(BrokerMessage::RegistrationResponse {
                             registration_id: registration_id.clone(),
                             client_id: client_id.clone(),
                             success: true,
                             error: None })
                         .expect("Expected to send ack to listener");
-                    // Alert session manager that our client is back so it doesn't kill the actor
+                        // Alert session manager that our client is back so it doesn't kill the actor
                         match myself.try_get_supervisor() {
                             Some(manager) => manager.send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success: true , error: None }).expect("Expected to send message to manager"),
-                            None => todo!()
+                            None => warn!("Couldn't find supervisor for session agent!")
                         }
                     } None => {
                         warn!("Could not find listener for client: {client_id}");
                         //TODO
-                        todo!("send error message or failed registration request?")
+                        // todo!("send error message or failed registration request?")
                     }
                 }
                 
-            }            
+            }      
+            // BrokerMessage::RegistrationResponse { client_id, ..} => {
+            //     //update state with new client_ref
+            //     match where_is(client_id.clone()) {
+            //         Some(listener) => {
+            //             state.client_ref = ActorRef::from(listener);
+            //             debug!("Re-established comms with client {client_id}");
+            //         }
+            //         None => warn!("Couldn't find new listener for client {client_id}")
+            //     }
+            // }
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 //forward to broker
                 state.broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
@@ -292,19 +314,11 @@ impl Actor for SessionAgent {
             BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
                 state.client_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result }).expect("Expected to forwrad ack to client");
             }
-            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
-                match result {
-                    Ok(()) => {
-                        //forard to client
-                        state.client_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward subscribe ack to client");
-                    },
-                    Err(_) => todo!(),
-                }
-                    
-                
+            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {        
+                state.client_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward subscribe ack to client");
             }
             
-            BrokerMessage::ErrorMessage { client_id, error } => todo!(),
+            // BrokerMessage::ErrorMessage { client_id, error } => todo!(),
             BrokerMessage::PingMessage { registration_id, client_id } => {
                 //forward to broker
                 
@@ -317,16 +331,16 @@ impl Actor for SessionAgent {
             BrokerMessage::DisconnectRequest { client_id } => {
                 //client disconnected, clean up after it then die with honor
                 debug!("client {client_id} disconnected");
-                myself.kill();
+                myself.stop(Some("DISCONNECT".to_string()));
             }
-            BrokerMessage::TimeoutMessage { registration_id, error } => {
+            BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 match myself.try_get_supervisor() {
-                    Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage { registration_id, error }).expect("Expected to forward to manager"),
-                    None=> todo!()
+                    Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage { client_id, registration_id, error }).expect("Expected to forward to manager"),
+                    None=> tracing::error!("Couldn't find supervisor.")
                 }
             }
             _ => {
-                todo!()
+                warn!("Received unexpected message {message:?}");
             }
         }
     

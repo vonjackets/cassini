@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use common::ClientMessage;
@@ -12,6 +12,7 @@ pub enum TcpClientMessage {
     Send(ClientMessage),
     RegistrationResponse(String),
     ErrorMessage(String),
+    GetRegistrationId(RpcReplyPort<String>)
 }
 
 /// Actor state for the TCP client
@@ -19,7 +20,8 @@ pub struct TcpClientState {
     bind_addr: String,
     writer: Option<Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>>,
     reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
-    registration_id: Option<String>
+    registration_id: Option<String>,
+    
 }
 
 pub struct TcpClientArgs {
@@ -165,6 +167,10 @@ impl Actor for TcpClientActor {
                 writer.flush().await.expect("Expected buffer to get flushed");
             }
             TcpClientMessage::RegistrationResponse(registration_id) => state.registration_id = Some(registration_id),
+            TcpClientMessage::GetRegistrationId(reply) => {
+                if let Some(registration_id) = &state.registration_id { reply.send(registration_id.to_owned()).expect("Expected to send registration_id to reply port"); } 
+                else { reply.send(String::default()).expect("Expected to send default string"); }
+            }
             _ => todo!()
                                 
         }
