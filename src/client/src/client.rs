@@ -4,7 +4,7 @@ use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use common::ClientMessage;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 
 /// Messages handled by the TCP client actor
@@ -31,23 +31,7 @@ pub struct TcpClientArgs {
 
 /// TCP client actor
 pub struct TcpClientActor;
-impl TcpClientActor {
-    async fn write(msg: ClientMessage, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
-        match serde_json::to_string(&msg) {
-            Ok(serialized) => {
-                tokio::spawn( async move {
-                    let mut writer = writer.lock().await;
-                    let msg = format!("{serialized}\n"); //add newline
-                    if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                        warn!("Failed to send message to server {msg:?}");
-                    }
-                    writer.flush().await.expect("???");
-                }).await.expect("Expected write thread to finish");   
-            }
-            Err(e) => error!("{e}")
-        }
-    }
-}
+
 #[async_trait]
 impl Actor for TcpClientActor {
     type Msg = TcpClientMessage;

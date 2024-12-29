@@ -9,6 +9,8 @@ use async_trait::async_trait;
 
 use common::{BrokerMessage, ClientMessage, BROKER_NAME};
 
+use crate::UNEXPECTED_MESSAGE_STR;
+
 // ============================== Listener Manager ============================== //
 /// The actual listener/server process. When clients connect to the server, their stream is split and 
 /// given to a worker processes to use to interact with and handle that connection with the client.
@@ -30,7 +32,7 @@ impl Actor for ListenerManager {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        args: ListenerManagerArgs
+        _args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Starting {myself:?}");
         //link with supervisor
@@ -46,7 +48,7 @@ impl Actor for ListenerManager {
 
     /// Once a the manager is running as a process, start the server
     /// and listen for incoming connections
-    async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_start(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
 
 
         let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
@@ -167,7 +169,7 @@ impl Listener {
                     let mut writer = writer.lock().await;
                     let msg = format!("{serialized}\n"); //add newline
                     if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                        warn!("Failed to send message to client {client_id}: {msg:?}");
+                        warn!("Failed to send message to client {client_id}: {e}");
                     }
                     writer.flush().await.expect("???");
                 }).await.expect("Expected write thread to finish");   
@@ -246,7 +248,7 @@ impl Actor for Listener {
         Ok(())
     }
 
-    async fn post_stop(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_stop(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
 
         debug!("Successfully stopped {myself:?}");
         Ok(())
@@ -312,7 +314,7 @@ impl Actor for Listener {
                 }
                 
             },
-            BrokerMessage::PublishRequest { registration_id, topic, payload } => {
+            BrokerMessage::PublishRequest { topic, payload, .. } => {
                 //confirm listener has registered session
                 if let Some(id) = &state.registration_id {
 
@@ -362,7 +364,7 @@ impl Actor for Listener {
                     });
                 } else {warn!("Received request from unregistered client!!"); }
             }
-            BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
+            BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, .. } => {
                 //TODO: log client id instead
                 debug!("Session {registration_id} successfully unsubscribed from topic: {topic}");
                 let response = ClientMessage::UnsubscribeAcknowledgment {
@@ -395,9 +397,8 @@ impl Actor for Listener {
                 //TODO: Do something productive instead of falling on ones sword. Enter reconnect loop that tries 1-3 times before giving up?
                 // myself.kill()
             }
-            BrokerMessage::ErrorMessage { client_id, error } => todo!(),
             _ => {
-                todo!()
+                warn!(UNEXPECTED_MESSAGE_STR)
             }
         }
         Ok(())

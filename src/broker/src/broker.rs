@@ -1,4 +1,4 @@
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
 use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
 use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
@@ -72,7 +72,7 @@ impl Actor for Broker {
         Ok(state)
     }
 
-    async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn handle_supervisor_evt(&self, _myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         
         match msg {
             SupervisionEvent::ActorStarted(actor_cell) => {
@@ -108,7 +108,7 @@ impl Actor for Broker {
         Ok(())
     }
     
-    async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_start(&self, myself: ActorRef<Self::Msg>, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         info!("Broker: Started {myself:?}");
         Ok(())
     }
@@ -142,7 +142,7 @@ impl Actor for Broker {
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::UnsubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward request to subscriber manager");
             }
-            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {
+            BrokerMessage::SubscribeAcknowledgment { registration_id, topic, .. } => {
                 where_is(registration_id.clone()).map(|session_agent_ref|{
                     session_agent_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id.clone(), topic: topic.clone(), result: Ok(()) }).unwrap();
                 });
@@ -166,10 +166,9 @@ impl Actor for Broker {
                     actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager");
                 });
             },
-            BrokerMessage::ErrorMessage { client_id, error } => {
+            BrokerMessage::ErrorMessage { error, .. } => {
                 warn!("Error Received: {error}");
             },
-            BrokerMessage::PongMessage { registration_id } => todo!(),
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 //cleanup subscribers
                 
@@ -191,7 +190,7 @@ impl Actor for Broker {
                 }
                 
             }
-            _ => todo!()
+            _ => warn!("Received unexepcted message {message:?}")
         }
         Ok(())
     }

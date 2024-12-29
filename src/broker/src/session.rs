@@ -1,13 +1,11 @@
-use std::{collections::HashMap, hash::Hash, time::Duration};
-
-use ractor::{async_trait, registry::{registered, where_is}, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tokio::task::JoinHandle;
+use std::collections::HashMap;
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-
 use common::{BrokerMessage, BROKER_NAME};
+
+use crate::UNEXPECTED_MESSAGE_STR;
 
 /// The manager process for our concept of client sessions.
 /// When thje broker receives word of a new connection from the listenerManager, it requests
@@ -55,7 +53,7 @@ impl Actor for SessionManager {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        args: SessionManagerArgs
+        _args: SessionManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
         //parse args. if any
@@ -66,7 +64,7 @@ impl Actor for SessionManager {
 
         Ok(state)
     }
-    async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_start(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         debug!("{myself:?} started");
         //link with supervisor
         match where_is(BROKER_NAME.to_string()) {
@@ -107,7 +105,7 @@ impl Actor for SessionManager {
                 }   
                 
             }
-            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
+            BrokerMessage::RegistrationResponse { registration_id, client_id, .. } => {
                 //A client has (re)registered. Cancel timeout thread
                 // debug!("SessionManager: Alerted of session registration");
                 if let Some(registration_id) = registration_id {
@@ -317,17 +315,6 @@ impl Actor for SessionAgent {
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {        
                 state.client_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward subscribe ack to client");
             }
-            
-            // BrokerMessage::ErrorMessage { client_id, error } => todo!(),
-            BrokerMessage::PingMessage { registration_id, client_id } => {
-                //forward to broker
-                
-            },
-            BrokerMessage::PongMessage { .. } => {
-
-                debug!("Received pong from broker for session");
-                
-            },
             BrokerMessage::DisconnectRequest { client_id } => {
                 //client disconnected, clean up after it then die with honor
                 debug!("client {client_id} disconnected");
@@ -340,7 +327,7 @@ impl Actor for SessionAgent {
                 }
             }
             _ => {
-                warn!("Received unexpected message {message:?}");
+                warn!(UNEXPECTED_MESSAGE_STR);
             }
         }
     

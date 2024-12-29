@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use common::{BrokerMessage, BROKER_NAME};
+
+use crate::UNEXPECTED_MESSAGE_STR;
 
 // ============================== Topic Supervisor definition ============================== //
 /// Our supervisor for managing topics and their message queues
@@ -63,20 +65,16 @@ impl Actor for TopicManager {
         if let Some(topics) = args.topics {
             for topic in topics {
                 //start topic actors for that topic
-                let args = TopicAgentArgs{ topic: topic.clone()};
-                match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
-                    Ok(_) => (),
+                
+                match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
+                    Ok((actor, _)) => {
+                        state.topics.insert(topic.clone(), actor.clone());
+                    },
                     Err(_) => error!("Failed to start actor for topic {topic}"),
                 }
-                    
-                
-            }
-        }
 
-        let state:TopicManagerState = TopicManagerState {
-            topics: HashMap::new()
-         };
-        
+            }
+        }        
         debug!("Starting {myself:?}");
         Ok(state)
     }
@@ -84,7 +82,7 @@ impl Actor for TopicManager {
     async fn post_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+        _: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
             debug!("{myself:?} Started");
             
             Ok(())
@@ -109,8 +107,8 @@ impl Actor for TopicManager {
                     warn!("No agent set to handle topic: {topic}, starting new agent...");    
                     //TODO: spin up new topic actor if topic doesn't exist?
                     let broker = myself.try_get_supervisor().unwrap();
-                    let args = TopicAgentArgs { topic: topic.clone()};
-                    match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
+                    
+                    match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
                     
                     Ok((actor, _)) => {
                         state.topics.insert(topic.clone(), actor.clone());
@@ -129,7 +127,7 @@ impl Actor for TopicManager {
                 None => warn!("Received publish request from unknown session. {payload}")
                 }
             },
-            BrokerMessage::PublishResponse { topic, payload, result } => {
+            BrokerMessage::PublishResponse { topic, payload, .. } => {
                 //forward to broker
                 match myself.try_get_supervisor(){
                     Some(broker) => broker.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) }).expect("Expected to forward message to broker"),
@@ -146,8 +144,8 @@ impl Actor for TopicManager {
                         } else {
                             warn!("No agent set to handle topic: {topic}, starting new agent...");    
                             //TODO: spin up new topic actor if topic doesn't exist?
-                            let args = TopicAgentArgs { topic: topic.clone() };
-                            match Actor::spawn_linked(Some(topic.clone()), TopicAgent, args, myself.clone().into()).await {
+                            
+                            match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
                             
                             Ok((actor, _)) => {
                                 state.topics.insert(topic.clone(), actor.clone());
@@ -164,12 +162,11 @@ impl Actor for TopicManager {
                         }
                             
                     }, None => {
-                        todo!()
+                        warn!("Received subscribe request for no session")
                     }
                 }
             }
-            BrokerMessage::UnsubscribeRequest { registration_id, topic } => todo!(),
-            _ => todo!()
+            _ => warn!(UNEXPECTED_MESSAGE_STR)
         }
         Ok(())
     }
@@ -181,12 +178,9 @@ impl Actor for TopicManager {
 struct TopicAgent;
 
 struct TopicAgentState {
-    topic: String,
     queue: VecDeque<String>
 }
-struct TopicAgentArgs {
-  topic: String
-}
+
 
 #[async_trait]
 impl Actor for TopicAgent {
@@ -198,16 +192,16 @@ impl Actor for TopicAgent {
     type State = TopicAgentState;
 
     #[doc = " Initialization arguments"]
-    type Arguments = TopicAgentArgs;
+    type Arguments = ();
 
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        args: TopicAgentArgs
+        _: ()
     ) -> Result<Self::State, ActorProcessingErr> {
 
-        let state: TopicAgentState  = TopicAgentState { topic: args.topic.clone() , queue: VecDeque::new()};
+        let state: TopicAgentState  = TopicAgentState { queue: VecDeque::new()};
         
         debug!("Starting... {myself:?}");
 
@@ -217,7 +211,7 @@ impl Actor for TopicAgent {
     async fn post_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+        _: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
             debug!("{myself:?} Started");
             Ok(())
 

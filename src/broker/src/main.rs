@@ -12,7 +12,8 @@ use ractor::Actor;
 async fn main() {
     init_logging();
     //start supervisor
-    let (broker, handle) = Actor::spawn(Some(BROKER_NAME.to_string()), Broker, ())
+    //TODO: Read configurations from somewhere
+    let (_broker, handle) = Actor::spawn(Some(BROKER_NAME.to_string()), Broker, ())
         .await
         .expect("Failed to start Broker");
     //CAUTION: Don't touch

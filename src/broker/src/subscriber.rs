@@ -1,7 +1,7 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
-use ractor::{actor::actor_cell, async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{debug, error, info, subscriber, warn};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use tracing::{debug, error, info, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
 
@@ -30,7 +30,7 @@ impl Actor for SubscriberManager {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        args: SubscriberManagerArgs
+        _: SubscriberManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::debug!("{myself:?} starting");
 
@@ -48,7 +48,7 @@ impl Actor for SubscriberManager {
     async fn post_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
+        _: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
             tracing::debug!("{myself:?} Started");
             Ok(())
 
@@ -136,7 +136,7 @@ impl Actor for SubscriberManager {
                             //TODO: Monitor this approach for effectiveness
                             match subscribers.binary_search(&subscriber_name) {
                                 Ok(index) => subscribers.remove(index),
-                                Err(e) => todo!("Expected to find index of the subscriber name for client but couldn't, send error message")
+                                Err(_) => todo!("Expected to find index of the subscriber name for client but couldn't, send error message")
                             };
 
 
@@ -177,7 +177,7 @@ impl Actor for SubscriberManager {
     }
 
 
-    async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
             SupervisionEvent::ActorTerminated(actor_cell, ..) => {
@@ -243,7 +243,7 @@ impl Actor for SubscriberAgent {
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
