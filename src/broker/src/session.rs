@@ -22,8 +22,12 @@ pub struct Session {
 
 /// Define the state for the actor
 pub struct SessionManagerState {
-    sessions: HashMap<String, Session>,           // Map of registration_id to Session ActorRefesses
-    timeout_handle: Option<JoinHandle<()>>
+    /// Map of registration_id to Session ActorRefes
+    sessions: HashMap<String, Session>,           
+    //TODO: add list of timer handles, more than one session can be at risk of timing out
+    ///Map of sessions at risk of timing out at any given time
+    //timeout_handles: HashMap<String, JoinHandle<()>> 
+    timeout_handle: Option<JoinHandle<()>> 
 }
 
 pub struct SessionManagerArgs {
@@ -138,18 +142,32 @@ impl Actor for SessionManager {
             BrokerMessage::TimeoutMessage { registration_id, error } => {
                warn!("Session {registration_id:?} timing out, waiting for reconnect...");
                //send disconnect to listenermgr
-                registration_id.map_or_else(|| {}, |registration_id| {
-                state.sessions.get_mut(&registration_id).expect("Failed to lookup session for id: {registration_id}");
-                //wait 90 seconds before killing session
-                // Spawn a new thread for the timer
-                let timer_handle = tokio::spawn(async move {
-                    // Sleep for 90 seconds
-                    tokio::time::sleep(Duration::from_secs(90));
-                    
-                });
+                if let Some(registration_id) = registration_id {
+                    let session = state.sessions.get(&registration_id).expect("Failed to lookup session for id: {registration_id}");
+                    let ref_clone = session.agent_ref.clone();
+                    //wait 90 seconds before killing session
+                    // Spawn a new thread for the timer
 
-                state.timeout_handle = Some(timer_handle);
-                });
+                    let timer_handle = tokio::spawn(async move {
+                        // Sleep for 90 seconds
+                        //TODO: Make wait time configurable?
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        warn!("Session {registration_id} timed out");
+                        // Forward a timeout message to the broker to be forwarded to other managers
+                        match myself.try_get_supervisor() {
+                            Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage {
+                                registration_id: Some(registration_id),
+                                error })
+                                .expect("Expected to forward to manager"),
+
+                            None => todo!("Respond to the broker being missing")
+                        }
+                        ref_clone.kill();
+                        //TODO: If a session timed out or died, cleanup after it. 
+                    });
+
+
+                }
                 
 
             }, _ => {
@@ -167,7 +185,7 @@ impl Actor for SessionManager {
             SupervisionEvent::ActorTerminated(actor_cell, boxed_state, _) => {
                 debug!("Session: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
             },
-            SupervisionEvent::ActorFailed(actor_cell, error) => todo!(),
+            SupervisionEvent:: ActorFailed(actor_cell, error) => warn!("Worker agent: {0:?}:{1:?} failed! {error}", actor_cell.get_name(), actor_cell.get_id()),
             SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
         }
         Ok(())

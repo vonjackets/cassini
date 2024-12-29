@@ -1,4 +1,4 @@
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
 use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
 use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
@@ -100,7 +100,7 @@ impl Actor for Broker {
                 
             }
             SupervisionEvent::ActorFailed(actor_cell, _) => {
-                warn!("Worker agent: {0:?}:{1:?}failed!", actor_cell.get_name(), actor_cell.get_id());
+                warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
             },
             SupervisionEvent::ProcessGroupChanged(_) => todo!(),
         }
@@ -170,11 +170,19 @@ impl Actor for Broker {
                 warn!("Error Received: {error}");
             },
             BrokerMessage::PongMessage { registration_id } => todo!(),
-            // BrokerMessage::TimeoutMessage { registration_id, error } => {
-            //     warn!("Received timeout for registration ID: {registration_id}");                
-            //     //tell listener mgr to handle business
-            //     state.listener.as_ref().unwrap().send_message(BrokerMessage::TimeoutMessage { registration_id }).expect("Failed to forward timeout message to listener manager");
-            // }
+            BrokerMessage::TimeoutMessage { registration_id, error } => {
+                //cleanup subscribers
+                debug!("Notifying subscriber manager client {registration_id:?} timed out");
+                if let Some(manager) = &state.subscriber_manager {
+                    manager.send_message(BrokerMessage::TimeoutMessage {
+                        registration_id,
+                        error
+                    }).expect("Expected to forward message");
+                    
+                }
+                
+                
+            }
             _ => todo!()
         }
         Ok(())

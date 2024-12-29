@@ -1,6 +1,6 @@
 use std::{collections::HashMap};
 
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{actor::actor_cell, async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{debug, error, info, subscriber, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
@@ -88,6 +88,7 @@ impl Actor for SubscriberManager {
                         if state.subscriptions.contains_key(&registration_id) {
                             warn!("Session agent {registration_id} already subscribed to topic {topic}");
                         } else {
+                            
                             let subscriber_id = format!("{registration_id}:{topic}");
                             let session = ActorRef::from(where_is(registration_id.clone()).unwrap());
                             let args = SubscriberAgentArgs {
@@ -154,6 +155,19 @@ impl Actor for SubscriberManager {
                     None => todo!()
                 }
             },
+            BrokerMessage::TimeoutMessage { registration_id, .. } => {
+                //cleanup all subscriptions for session
+                info!("Cleaning up subscribers for client {registration_id:?}");
+                registration_id.map(|registration_id: String|{
+                    for topic in state.subscriptions.keys() {
+                        let subscriber_name = format!("{registration_id}:{topic}");
+                        match where_is(subscriber_name.clone()) {
+                           Some(subscriber) => subscriber.stop(None),
+                           None => warn!("Couldn't find subscription {subscriber_name}")
+                         }
+                    }
+                });
+            }
             _ => todo!()
 
         }
@@ -165,11 +179,14 @@ impl Actor for SubscriberManager {
 
     async fn handle_supervisor_evt(&self, myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
-            SupervisionEvent::ActorStarted(_) => Ok(()),
-            SupervisionEvent::ActorTerminated(..) => Ok(()),
+            SupervisionEvent::ActorStarted(_) => (),
+            SupervisionEvent::ActorTerminated(actor_cell, ..) => {
+                debug!("Subscriber: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
+            },
             SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
             SupervisionEvent::ProcessGroupChanged(..) => todo!(),
         }
+        Ok(())
     }
 }
 

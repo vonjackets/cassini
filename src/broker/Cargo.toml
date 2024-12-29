@@ -14,6 +14,7 @@ tracing-glog = "0.4.0"
 tracing-subscriber = { version ="0.3.19", features=["std", "env-filter"]}
 uuid = { version = "1.11.0", features = ["v4"] }
 common = { path = "../common" }
+# tokio-util = "0.7.13"
 [[bin]]
 name = "cassini-server"
 path = "src/main.rs"
