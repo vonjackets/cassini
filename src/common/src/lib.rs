@@ -108,6 +108,7 @@ pub enum ClientMessage {
         PublishRequest {
             topic: String,
             payload: String,
+            registration_id: Option<String>
         },
         /// Publish response to the client.
         PublishResponse {
@@ -116,8 +117,11 @@ pub enum ClientMessage {
             result: Result<(), String>, // Ok for success, Err with error message
         },
         /// Subscribe request from the client.
-        // This request originates externally, so a registration_id is not added until it is received by the session
-        SubscribeRequest(String),
+        
+        SubscribeRequest {
+            registration_id: Option<String>,
+            topic: String
+        },
         /// Subscribe acknowledgment to the client.
         SubscribeAcknowledgment {
             topic: String,
@@ -135,10 +139,10 @@ pub enum ClientMessage {
         PingMessage,
         /// Pong message received from the client in response to a ping.
         PongMessage,
-        ///Disconnect intentionally with a client_id
-        DisconnectRequest(String),
+        ///Disconnect, sending a session id to end, if any
+        DisconnectRequest(Option<String>),
         ///Mostly for testing purposes, intentional timeout message with a client_id
-        TimeoutMessage(String)
+        TimeoutMessage(Option<String>)
 }
 
 impl BrokerMessage {
@@ -150,14 +154,14 @@ impl BrokerMessage {
                     client_id,
                 }
             },
-            ClientMessage::PublishRequest { topic, payload } => {
+            ClientMessage::PublishRequest { topic, payload, registration_id } => {
                 BrokerMessage::PublishRequest {
                     registration_id,
                     topic,
                     payload,
                 }
             },
-            ClientMessage::SubscribeRequest(topic) => {
+            ClientMessage::SubscribeRequest{topic, registration_id} => {
                 BrokerMessage::SubscribeRequest {
                     registration_id,
                     topic,
@@ -170,13 +174,13 @@ impl BrokerMessage {
                 }
             },
             
-            ClientMessage::DisconnectRequest(client_id) => {
+            ClientMessage::DisconnectRequest(registration_id) => {
                 BrokerMessage::DisconnectRequest {
                     client_id,
                     registration_id
                 }
             },
-            ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { client_id, registration_id: Some(registration_id), error: None },
+            ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { client_id, registration_id, error: None },
             
             // ClientMessage::PingMessage { client_id } => {
             //     BrokerMessage::PingMessage { client_id }

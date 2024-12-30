@@ -106,8 +106,7 @@ impl Actor for TopicManager {
                 } else {
                     warn!("No agent set to handle topic: {topic}, starting new agent...");    
                     //TODO: spin up new topic actor if topic doesn't exist?
-                    let broker = myself.try_get_supervisor().unwrap();
-                    
+
                     match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
                     
                     Ok((actor, _)) => {

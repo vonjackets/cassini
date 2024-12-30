@@ -13,9 +13,9 @@ use crate::UNEXPECTED_MESSAGE_STR;
 pub struct SessionManager;
 
 /// Our representation of a connected session, and how close it is to timing out
+/// TODO: What other fields might we want to have here?
 pub struct Session {
     agent_ref: ActorRef<BrokerMessage>,
-    ping_count: usize
 }
 
 
@@ -96,8 +96,7 @@ impl Actor for SessionManager {
                             
                         let (session_agent, _) = Actor::spawn_linked(Some(new_id.clone()), SessionAgent, args, myself.clone().into()).await.expect("Couldn't start session agent!");
                         state.sessions.insert(new_id.clone(), Session {
-                            agent_ref: session_agent,
-                            ping_count: 0
+                            agent_ref: session_agent                            
                         });                            
 
                     } None => error!("Couldn't lookup root broker actor!")
@@ -150,49 +149,43 @@ impl Actor for SessionManager {
                 }
             }
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
-               warn!("Session {registration_id:?} timing out, waiting for reconnect...");
-               //send disconnect to listenermgr
                 if let Some(registration_id) = registration_id {
-                    let session = state.sessions.get(&registration_id).expect("Failed to lookup session for id: {registration_id}");
-                    let ref_clone = session.agent_ref.clone();
                     
-                    let token = CancellationToken::new();
-                    
-                    state.cancellation_tokens.insert(registration_id.clone(), token.clone());
-                    let timeout = state.session_timeout.clone();
-                    let _ = tokio::spawn(async move {
-                        tokio::select! {
-                            // Step 3: Using cloned token to listen to cancellation requests
-                            _ = token.cancelled() => {
-                                // The timer was cancelled, task can shut down
-                            }
-                            //wait 90 seconds before killing session
-                            //TODO: Make configurable the amount of time we wait here, currently need to manually edit for testing purposes
-                            // Spawn a new thread for the timer
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
-                                match myself.try_get_supervisor() {
-                                    Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage {
-                                        client_id,
-                                        registration_id: Some(registration_id),
-                                        error })
-                                        .expect("Expected to forward to manager"),
+                    if let Some(session) = state.sessions.get(&registration_id) {
+                        warn!("Session {registration_id} timing out, waiting for reconnect...");
+                        let ref_clone = session.agent_ref.clone();    
+                        let token = CancellationToken::new();
 
-                                    None => warn!("Respond to the broker being missing")
+                        state.cancellation_tokens.insert(registration_id.clone(), token.clone());
+                        let timeout = state.session_timeout.clone();
+                        let _ = tokio::spawn(async move {
+                            tokio::select! {
+                                // Use cloned token to listen to cancellation requests
+                                _ = token.cancelled() => {
+                                    // The timer was cancelled, task can shut down
                                 }
-                                ref_clone.stop(Some("TIMEDOUT".to_string())); //wait for other parts of the broker to cleanup
-                            
+                                // wait before killing session
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
+                                    match myself.try_get_supervisor() {
+                                        Some(manager) => {
+                                            info!("Ending session {ref_clone:?}");
+                                            manager.send_message(BrokerMessage::TimeoutMessage {
+                                                client_id,
+                                                registration_id: Some(registration_id),
+                                                error })
+                                                .expect("Expected to forward to manager")
+                                        }
+    
+                                        None => warn!("Could not find broker supervisor!")
+                                    }
+                                    ref_clone.stop(Some("TIMEDOUT".to_string()));
+                                
+                                }
                             }
-                        }
-                    });
-                    
-
-
+                        });
+                    }
                 }
-                
-
-            }, _ => {
-                warn!("Received unexecpted message: {message:?}");
-            }
+            }, _ => warn!("Received unexpected message: {message:?}")
         }
         Ok(())
     }
@@ -242,8 +235,7 @@ impl Actor for SessionAgent {
     }
 
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-        //TODO: Start handling timeouts from the listener here, if that actor panics or dies because the client dropped the connection,
-        // we want a client not to lose their session
+        
         let client_id = state.client_ref.get_name().unwrap_or_default();
         let registration_id = myself.get_name().unwrap_or_default();
         info!("Started session {myself:?} for client {client_id}. Contacting");      
@@ -289,22 +281,10 @@ impl Actor for SessionAgent {
                         }
                     } None => {
                         warn!("Could not find listener for client: {client_id}");
-                        //TODO
-                        // todo!("send error message or failed registration request?")
                     }
                 }
                 
-            }      
-            // BrokerMessage::RegistrationResponse { client_id, ..} => {
-            //     //update state with new client_ref
-            //     match where_is(client_id.clone()) {
-            //         Some(listener) => {
-            //             state.client_ref = ActorRef::from(listener);
-            //             debug!("Re-established comms with client {client_id}");
-            //         }
-            //         None => warn!("Couldn't find new listener for client {client_id}")
-            //     }
-            // }
+            }
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 //forward to broker
                 state.broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
@@ -320,7 +300,7 @@ impl Actor for SessionAgent {
                 state.broker.send_message(BrokerMessage::UnsubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
             },
             BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result } => {
-                state.client_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result }).expect("Expected to forwrad ack to client");
+                state.client_ref.send_message(BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, result }).expect("Expected to forward ack to client");
             }
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {        
                 state.client_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward subscribe ack to client");

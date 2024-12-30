@@ -5,6 +5,8 @@ use tracing::{debug, error, info, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
 
+use crate::UNEXPECTED_MESSAGE_STR;
+
 /// Our supervisor for the subscribers
 /// When a user subscribes to a new topic, this actor is notified inb conjunction with the topic manager.
 /// A new process is started to wait and listen for new messages on that topic and forward messages.
@@ -24,12 +26,11 @@ impl SubscriberManager {
     /// Removes all subscriptions for a given session
     fn forget_subscriptions(registration_id: Option<String>, subscriptions: HashMap<String, Vec<String>> ) {
         //cleanup all subscriptions for session
-        registration_id.map(|registration_id: String|{
-            info!("Cleaning up subscribers for session {registration_id:?}");
+        registration_id.map(|registration_id: String| {
             for topic in subscriptions.keys() {
                 let subscriber_name = format!("{registration_id}:{topic}");
                 match where_is(subscriber_name.clone()) {
-                    Some(subscriber) => subscriber.stop(Some("CLIENT_UNSUBSCRIBED".to_string())),
+                    Some(subscriber) => subscriber.stop(Some("UNSUBSCRIBED".to_string())),
                     None => warn!("Couldn't find subscription {subscriber_name}")
                 }
             }
@@ -131,10 +132,8 @@ impl Actor for SubscriberManager {
                                 broker.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) }).expect("Expected to forward ack to broker");
                             });
                         }                        
-                    }, 
-                    None => {
-                        todo!("Error message!")
-                    }
+                    } 
+                    None => ()
                 }
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
@@ -175,23 +174,10 @@ impl Actor for SubscriberManager {
             }
             BrokerMessage::TimeoutMessage { registration_id, .. } => {
                 SubscriberManager::forget_subscriptions(registration_id, state.subscriptions.clone());
-                // //cleanup all subscriptions for session
-                // info!("Cleaning up subscribers for session {registration_id:?}");
-                // registration_id.map(|registration_id: String|{
-                //     for topic in state.subscriptions.keys() {
-                //         let subscriber_name = format!("{registration_id}:{topic}");
-                //         match where_is(subscriber_name.clone()) {
-                //            Some(subscriber) => subscriber.stop(None),
-                //            None => warn!("Couldn't find subscription {subscriber_name}")
-                //          }
-                //     }
-                // });
             }
-            _ => todo!()
+            _ => warn!(UNEXPECTED_MESSAGE_STR)
 
         }
-            
-        
         Ok(())
     }
 
@@ -199,11 +185,9 @@ impl Actor for SubscriberManager {
     async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
-            SupervisionEvent::ActorTerminated(actor_cell, ..) => {
-                debug!("Subscriber: {0:?}:{1:?} terminated", actor_cell.get_name(), actor_cell.get_id());
-            },
+            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}", actor_cell.get_name()); }
             SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
-            SupervisionEvent::ProcessGroupChanged(..) => todo!(),
+            SupervisionEvent::ProcessGroupChanged(..) => (),
         }
         Ok(())
     }
@@ -271,11 +255,9 @@ impl Actor for SubscriberAgent {
                 let id = state.registration_id.clone();
                 tracing::debug!("Received notification of message on topic: {topic}, forwarding to session: {id}");
                 state.session_agent_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("Failed to forward message to session");
-                //TODO: It's a goal to support resiliency. If we fail to talk to the session for some reason, but aren't told to discard the subscription,
-                // How can we ensure a user who get's disconnected temporarily doesn't lose this subscription?
-                //TODO: Store dead letter queue here in case of failure to send to session?
+                //TODO: Store dead letter queue here in case of failure to send to session
             },
-            _ => todo!()
+            _ => warn!(UNEXPECTED_MESSAGE_STR)
 
         }
         Ok(())

@@ -85,7 +85,6 @@ impl Actor for TcpClientActor {
                                         
                                     } else {
                                         warn!("Failed to register session with the server. {error:?}");
-                                        //TODO: Retry?
                                     }
                                 },
                                 ClientMessage::PublishResponse { topic, payload, result } => {
@@ -95,7 +94,6 @@ impl Actor for TcpClientActor {
                                         //TODO: Forward message to some consumer
                                     } else {
                                         warn!("Failed to publish message to topic: {topic}");
-                                        //TODO: Depending on the error type, should we try again?
                                     }
                                 },
 

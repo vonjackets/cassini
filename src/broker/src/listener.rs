@@ -228,9 +228,9 @@ impl Actor for Listener {
                                 match msg {
                                     ClientMessage::PingMessage => debug!("PING"),
                                     _ => {
-                                      debug!("Received message: {msg:?}");
                                       //convert datatype to broker_meessage, fields will be populated during message handling
                                       let converted_msg = BrokerMessage::from_client_message(msg, id.clone(), None);
+                                      debug!("Received message: {converted_msg:?}");
                                       myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
                                     }
                                 }
@@ -265,15 +265,12 @@ impl Actor for Listener {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id } => {
-                // If we got some registration id here, 
-                // try to find the active session and reconnect,
-
-                if registration_id.is_some() && state.registration_id.is_some() {
-                    let id_in = registration_id.unwrap();
-                    let session_id = &state.registration_id.clone().unwrap();
-
-
-                    if id_in == session_id.to_owned() {
+                
+                
+                if registration_id.is_some(){
+                    
+                    if registration_id == state.registration_id {
+                        let session_id = &state.registration_id.clone().unwrap();
                         //send message to session that it has a new listener for it to get messages from
                         match where_is(session_id.clone()) {
                             Some(session) => {
@@ -286,10 +283,17 @@ impl Actor for Listener {
 
                             }, None => {error!("Could not find session with id {session_id} for client: {client_id}") }
                         }
-                    }
+                    } else { 
+                        warn!("Received registration request for unexpected session: {registration_id:?}");
+                        Listener::write(
+                            client_id,
+                            ClientMessage::RegistrationResponse
+                                { registration_id: registration_id.unwrap(), success: false,  error: Some(String::from("Unexpected session id")) },
+                            Arc::clone(&state.writer))
+                            .await;
+                     }
                 } else {
                     // Forward to broker to begin creating new session and wait for response.
-                    info!("Starting new session!");
                     match where_is(BROKER_NAME.to_string()) {
                         Some(broker) => {
                             broker.send_message(BrokerMessage::RegistrationRequest { registration_id: None, client_id: myself.get_name().unwrap_or_default() })
@@ -297,8 +301,6 @@ impl Actor for Listener {
                         } None => todo!()
                     }
                 }
-
-                
 
             }
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
@@ -313,21 +315,30 @@ impl Actor for Listener {
                     }, Arc::clone(&state.writer)).await;
 
                 } else {
-                    error!("Failed to register with broker! {error:?}");
-                    //TODO: Determine failure cases and how to respond
+                    warn!("Failed to register with broker! {error:?}");
                 }
                 
             },
-            BrokerMessage::PublishRequest { topic, payload, .. } => {
+            BrokerMessage::PublishRequest { topic, payload, registration_id } => {
                 //confirm listener has registered session
-                if let Some(id) = &state.registration_id {
-
+                if registration_id == state.registration_id && registration_id.is_some() {
+                    let id = registration_id.unwrap();
                     where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
                     |session| {
-                        session.send_message(BrokerMessage::PublishRequest { registration_id: Some(id.to_string()), topic, payload }).expect("Expected to forward message");
+                        session.send_message(BrokerMessage::PublishRequest { registration_id: Some(id), topic, payload }).expect("Expected to forward message");
                     });
                                                     
-                } else {warn!("Received request from unregistered client!!"); }
+                } else {
+                    warn!("Received bad request, session mismatch: {registration_id:?}");
+                    Listener::write(state.client_id.clone(),
+                    ClientMessage::PublishResponse {
+                        topic,
+                        payload,
+                        result: Err("Received request from unknown client! {registration_id:?}".to_string())
+                    },
+                    Arc::clone(&state.writer))
+                    .await;
+                }
             }
             BrokerMessage::PublishResponse { topic, payload, .. } => {
                 info!("Successfully published message to topic: {topic}");
@@ -341,35 +352,33 @@ impl Actor for Listener {
                     topic, result: Result::Ok(())
                 };
                 
-                
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
 
             },
-            BrokerMessage::SubscribeRequest {topic , ..} => {
+            BrokerMessage::SubscribeRequest {registration_id, topic } => {
                 //Got request to subscribe from client, confirm we've been registered
-                if let Some(id) = &state.registration_id {
-
-                
-                
+                if registration_id == state.registration_id && registration_id.is_some() {
+                    let id = registration_id.unwrap();
                     where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
                     |session| {
-                        session.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(id.to_string()), topic }).expect("Expected to forward message");
+                        session.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(id), topic }).expect("Expected to forward message");
                     });
                 
                                 
                 } else {warn!("Received request from unregistered client!!"); }
                
             },
-            BrokerMessage::UnsubscribeRequest { topic, .. } => {
-                if let Some(id) = &state.registration_id {    
+            BrokerMessage::UnsubscribeRequest { registration_id,topic } => {
+                if registration_id == state.registration_id && registration_id.is_some() {
+                    let id = registration_id.unwrap();
                     where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
                     |session| {
-                        session.send_message(BrokerMessage::UnsubscribeRequest { registration_id: Some(id.to_string()), topic }).expect("Expected to forward message");
+                        session.send_message(BrokerMessage::UnsubscribeRequest { registration_id: Some(id), topic }).expect("Expected to forward message");
                     });
                 } else {warn!("Received request from unregistered client!!"); }
             }
             BrokerMessage::UnsubscribeAcknowledgment { registration_id, topic, .. } => {
-                //TODO: log client id instead
+
                 debug!("Session {registration_id} successfully unsubscribed from topic: {topic}");
                 let response = ClientMessage::UnsubscribeAcknowledgment {
                      topic, result: Result::Ok(())
@@ -378,38 +387,35 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
             BrokerMessage::DisconnectRequest { client_id, registration_id } => {
-                info!("Received disconnect request from client: {client_id}");
-                //if we're registered, propogate to session agent, otherwise, die with honor
-                match &state.registration_id {
-                    Some(id) => {
-                        match where_is(id.to_string()) {
-                            Some(session) => session.send_message(BrokerMessage::DisconnectRequest { client_id, registration_id: Some(id.to_string()) }).unwrap(),
-                            None => warn!("Failed to find session: {id}")
-                        }
-                    }
-                    None => {
-                        // Otherwise, tell supervisor this listener is done
-                        match myself.try_get_supervisor() {
-                            Some(broker) => broker.send_message(
-                                BrokerMessage::DisconnectRequest { client_id, registration_id: None })
-                                .expect("Expected to forward message"),
+                if registration_id == state.registration_id && registration_id.is_some() {
+                    //if we're registered, propogate to session agent
+                            let id = registration_id.unwrap();
+                            match where_is(id.clone()) {
+                                Some(session) => session.send_message(BrokerMessage::DisconnectRequest { client_id, registration_id: Some(id.to_string()) }).unwrap(),
+                                None => warn!("Failed to find session: {id}")
+                            }
+                } else {                                       
+                    // Otherwise, tell supervisor this listener is done
+                    match myself.try_get_supervisor() {
+                        Some(broker) => broker.send_message(
+                            BrokerMessage::DisconnectRequest { client_id, registration_id: None })
+                            .expect("Expected to forward message"),
 
-                            None => warn!("Failed to find supervisor")
-                        }
+                        None => warn!("Failed to find supervisor")
                     }
-                }
+                }                   
+                    
+                
             }
             BrokerMessage::TimeoutMessage {error, .. } => {
-                //Client timed out, if we were registered, let session know, otherwise, die with honor
+                //Client timed out, if we were registered, let session know
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                        
+                        warn!("Listener: {myself:?} timed out");
                         session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
                      }),
                     _ => ()
                 }
-                //TODO: Do something productive instead of falling on ones sword. Enter reconnect loop that tries 1-3 times before giving up?
-                // myself.kill()
             }
             _ => {
                 warn!(UNEXPECTED_MESSAGE_STR)
