@@ -52,7 +52,8 @@ impl Actor for TcpClientActor {
         &self,
         myself: ActorRef<Self::Msg>,
         state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
-            let addr = state.bind_addr.clone();
+        
+        let addr = state.bind_addr.clone();
         info!("{myself:?} started. Connecting to {addr} ");
         
         let stream = TcpStream::connect(&addr).await.expect("Failed to connect to {addr}");

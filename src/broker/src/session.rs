@@ -23,14 +23,12 @@ pub struct Session {
 pub struct SessionManagerState {
     /// Map of registration_id to Session ActorRefes
     sessions: HashMap<String, Session>,           
-    //TODO: add list of timer handles, more than one session can be at risk of timing out
-    ///Map of sessions at risk of timing out at any given time
-    //timeout_handles: HashMap<String, JoinHandle<()>> 
+    session_timeout: u64,
     cancellation_tokens: HashMap<String, CancellationToken>,
 }
 
 pub struct SessionManagerArgs {
-    pub broker_id: String,
+    pub session_timeout: u64
 }
 
 
@@ -53,13 +51,14 @@ impl Actor for SessionManager {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _args: SessionManagerArgs
+        args: SessionManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
         //parse args. if any
         let state = SessionManagerState {
             sessions: HashMap::new(),
-            cancellation_tokens: HashMap::new()
+            cancellation_tokens: HashMap::new(),
+            session_timeout: args.session_timeout
         };
 
         Ok(state)
@@ -149,8 +148,8 @@ impl Actor for SessionManager {
                     let token = CancellationToken::new();
                     
                     state.cancellation_tokens.insert(registration_id.clone(), token.clone());
-
-                    let timer = tokio::spawn(async move {
+                    let timeout = state.session_timeout.clone();
+                    let _ = tokio::spawn(async move {
                         tokio::select! {
                             // Step 3: Using cloned token to listen to cancellation requests
                             _ = token.cancelled() => {
@@ -159,7 +158,7 @@ impl Actor for SessionManager {
                             //wait 90 seconds before killing session
                             //TODO: Make configurable the amount of time we wait here, currently need to manually edit for testing purposes
                             // Spawn a new thread for the timer
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
                                 match myself.try_get_supervisor() {
                                     Some(manager) => manager.send_message(BrokerMessage::TimeoutMessage {
                                         client_id,

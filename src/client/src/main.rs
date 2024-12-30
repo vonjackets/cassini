@@ -17,19 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ClientMessage::RegistrationRequest { registration_id: None }
         )).unwrap();
 
-        client.send_after( Duration::from_secs(1), || { 
-            TcpClientMessage::Send(ClientMessage::SubscribeRequest { topic: "apples".to_owned() })
-        });
         client.send_interval(Duration::from_secs(10), || { TcpClientMessage::Send(ClientMessage::PingMessage) });
-        
-        client.send_interval(Duration::from_secs(3),
-        || { TcpClientMessage::Send(ClientMessage::PublishRequest { topic: "apples".to_string(), payload: "Hello apple".to_string() } )}
-        );
-
-        client.send_after(Duration::from_secs(10), || {TcpClientMessage::Send(ClientMessage::UnsubscribeRequest { topic: "apples".to_owned() })});
-            
-
-        
+    
         handle.await.expect("something happened");
     }).await.expect("Keep actor alive");
 

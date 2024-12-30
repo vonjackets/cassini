@@ -16,30 +16,46 @@ pub struct BrokerState {
     subscriber_manager: Option<ActorRef<BrokerMessage>>,
     handles: Vec<JoinHandle<()>>
 }
+/// Would-be configurations for the broker actor itself, as well its workers
+#[derive(Clone)]
+pub struct BrokerArgs {
+    /// Socket address to listen for connections on
+    pub bind_addr: String,
+    /// The amount of time (in seconds) before a session times out
+    /// Should be between 10 and 300 seconds
+    pub session_timeout: Option<u64>,
+}
 
 #[async_trait]
 impl Actor for Broker {
     type Msg = BrokerMessage;
     type State = BrokerState;
-    type Arguments = ();
+    type Arguments = BrokerArgs;
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: (),
+        args: BrokerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("Broker: Starting {myself:?}");
+        
         //start listener manager to listen for incoming connections
+
         let mut handles = Vec::new();
         //clone actor re
         handles.push(tokio::spawn(async move {
-            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, ListenerManagerArgs { broker_id: "BrokerSupervisor".to_string()}).await.expect("Failed to start listener manager");
+            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, ListenerManagerArgs { bind_addr: args.bind_addr}).await.expect("Failed to start listener manager");
             handle.await.expect("Failed");
         }));
 
+        
+        let mut session_timeout: u64 = 90;
+        if let Some(timeout) = args.session_timeout {
+            session_timeout = timeout;
+        }
         handles.push(tokio::spawn(async move {
             let session_mgr_args = SessionManagerArgs {
-                broker_id: "BrokerSupervisor".to_string()
+                session_timeout: session_timeout 
             };
             let (_, handle) = Actor::spawn(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, session_mgr_args).await.expect("");
             handle.await.expect("????");

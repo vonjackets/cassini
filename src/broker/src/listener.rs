@@ -17,12 +17,13 @@ use crate::UNEXPECTED_MESSAGE_STR;
 pub struct ListenerManager;
 pub struct ListenerManagerState {
     listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
+    bind_addr: String,
 }
 
 pub struct ListenerManagerArgs {
-    pub broker_id:  String
-    //TODO: Get bind_addr from config and pass in here?
+    pub bind_addr: String,
 }
+
 #[async_trait]
 impl Actor for ListenerManager {
     type Msg = BrokerMessage;
@@ -32,7 +33,7 @@ impl Actor for ListenerManager {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _args: ListenerManagerArgs
+        args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Starting {myself:?}");
         //link with supervisor
@@ -41,20 +42,20 @@ impl Actor for ListenerManager {
             None => warn!("Couldn't link with broker supervisor!")
         }
         //set up state object
-        let state = ListenerManagerState { listeners: HashMap::new() };
+        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr };
         info!("ListenerManager: Agent starting");
         Ok(state)
     }
 
     /// Once a the manager is running as a process, start the server
     /// and listen for incoming connections
-    async fn post_start(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
 
+        let bind_addr = state.bind_addr.clone();
 
-        let bind_addr = "127.0.0.1:8080"; //TODO: replace with value from state after reading it in from args
-        let server = TcpListener::bind(bind_addr).await.expect("could not start tcp listener");
+        let server = TcpListener::bind(bind_addr.clone()).await.expect("could not start tcp listener");
         
-        info!("ListenerManager: Server running on {}", bind_addr);
+        info!("ListenerManager: Server running on {bind_addr}");
         
         let _ = tokio::spawn(async move {
             
@@ -228,8 +229,6 @@ impl Actor for Listener {
                                       myself.send_message(converted_msg).expect("Could not forward message to {myself:?}");
                                     }
                                 }
-
-                                
                             } else {
                                 //bad data
                                 warn!("Failed to parse message from client");

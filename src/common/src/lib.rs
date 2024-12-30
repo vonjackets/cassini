@@ -116,9 +116,7 @@ pub enum ClientMessage {
         },
         /// Subscribe request from the client.
         // This request originates externally, so a registration_id is not added until it is received by the session
-        SubscribeRequest {
-            topic: String,
-        },
+        SubscribeRequest(String),
         /// Subscribe acknowledgment to the client.
         SubscribeAcknowledgment {
             topic: String,
@@ -158,7 +156,7 @@ impl BrokerMessage {
                     payload,
                 }
             },
-            ClientMessage::SubscribeRequest {  topic } => {
+            ClientMessage::SubscribeRequest(topic) => {
                 BrokerMessage::SubscribeRequest {
                     registration_id,
                     topic,
