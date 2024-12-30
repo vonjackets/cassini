@@ -95,12 +95,11 @@ impl Actor for ListenerManager {
                 state.listeners.insert(client_id.clone(), listener_ref.clone());
                 
             }
-            SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
-                //TODO: Getting here means a connection died, forward a message to thje broker via the session manager
-                
-                info!("Worker agent: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
-                state.listeners.remove(&actor_cell.get_name().unwrap());
-                
+            SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {                
+                actor_cell.get_name().map(|client_id| {
+                    info!("Worker agent: {client_id}:{0:?} terminated. {reason:?}", actor_cell.get_id());
+                    state.listeners.remove(&client_id);
+                });
             }
             SupervisionEvent::ActorFailed(actor_cell, _) => {
                 warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
@@ -124,6 +123,12 @@ impl Actor for ListenerManager {
                 where_is(client_id.clone()).unwrap().send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success, error }).expect("Failed to forward message to client: {client_id}");
                 
             },
+            BrokerMessage::DisconnectRequest { client_id, .. } => {
+                match where_is(client_id.clone()) {
+                    Some(listener) => listener.stop(Some("DISCONNECTED".to_string())),
+                    None => warn!("Couldn't find listener {client_id}")
+                }
+            }
             BrokerMessage::TimeoutMessage { client_id, ..} => {
                 match where_is(client_id.clone()) {
                     Some(listener) => listener.stop(Some("TIMEDOUT".to_string())),
@@ -372,17 +377,27 @@ impl Actor for Listener {
                 
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
-            BrokerMessage::DisconnectRequest { client_id } => {
+            BrokerMessage::DisconnectRequest { client_id, registration_id } => {
                 info!("Received disconnect request from client: {client_id}");
                 //if we're registered, propogate to session agent, otherwise, die with honor
                 match &state.registration_id {
                     Some(id) => {
-                        where_is(id.to_string()).unwrap().send_message(BrokerMessage::DisconnectRequest { client_id }).unwrap();
+                        match where_is(id.to_string()) {
+                            Some(session) => session.send_message(BrokerMessage::DisconnectRequest { client_id, registration_id: Some(id.to_string()) }).unwrap(),
+                            None => warn!("Failed to find session: {id}")
+                        }
                     }
-                    _ => ()
-                }
-                myself.kill();
+                    None => {
+                        // Otherwise, tell supervisor this listener is done
+                        match myself.try_get_supervisor() {
+                            Some(broker) => broker.send_message(
+                                BrokerMessage::DisconnectRequest { client_id, registration_id: None })
+                                .expect("Expected to forward message"),
 
+                            None => warn!("Failed to find supervisor")
+                        }
+                    }
+                }
             }
             BrokerMessage::TimeoutMessage {error, .. } => {
                 //Client timed out, if we were registered, let session know, otherwise, die with honor

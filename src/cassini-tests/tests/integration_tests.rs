@@ -77,7 +77,7 @@ mod tests {
                     //disconnect
                     let client_id = client.get_name().unwrap();
                     let _ = client.send_message(TcpClientMessage::Send(ClientMessage::DisconnectRequest(client_id))).map_err(|e| panic!("Failed to send message to client actor {e}"));
-                    let _ = client.kill_after(Duration::from_secs(1)).await;
+                    let _ = client.kill_after(Duration::from_secs(5));
                     handle.await.expect("expected to start actor");
                     
                 }).await;
@@ -129,10 +129,6 @@ mod tests {
 
                     assert_ne!(session_id, String::default());
                     
-                    //disconnect
-                    client.send_message(TcpClientMessage::Send(
-                        ClientMessage::DisconnectRequest(client.get_name().unwrap())
-                    )).expect("Expected to foward msg");
                     client.kill();
 
                     handle.await.expect("expected to start actor");
@@ -143,6 +139,60 @@ mod tests {
 
             }).await.expect("Expected test to pass");
         }
+
+        #[tokio::test]
+        async fn test_registered_client_disconnect() {
+            common::init_logging();
+            let _ = tokio::spawn(async {
+                let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+
+                let broker_supervisor = supervisor.clone();
+                let broker_args = BrokerArgs { bind_addr: String::from("127.0.0.1:8080"), session_timeout: None };
+                let _ = tokio::spawn(async move {
+                    //start supervisor
+                    let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                        .await
+                        .expect("Failed to start Broker");
+                    
+                    
+                    
+                    handle.await.expect("Something went wrong");
+                });
+
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                
+                let client_supervisor: ActorRef<()> = supervisor.clone();
+
+                let client_handle = tokio::spawn(async move{
+                    let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
+                    TcpClientActor,
+                    TcpClientArgs {
+                        bind_addr: "127.0.0.1:8080".to_string(),
+                        registration_id: None
+                    },
+                    client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+                    client.send_message(TcpClientMessage::Send(
+                        ClientMessage::RegistrationRequest { registration_id: None }
+                    )).unwrap();
+
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    
+                    //disconnect
+                    client.send_message(TcpClientMessage::Send(
+                        ClientMessage::DisconnectRequest(client.get_name().unwrap())
+                    )).expect("Expected to foward msg");
+                    client.kill_after(Duration::from_secs(5));
+
+                    handle.await.expect("expected to start actor");
+                    
+                });
+
+            let _ = client_handle.await;
+
+            }).await.expect("Expected test to pass");
+        }
+
 
         /// Test scenario where a client disconnects unexpectedly,
         /// When the listener's connection fails the session manager should wait for a 

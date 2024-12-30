@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::Iter, HashMap};
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{debug, error, info, warn};
@@ -20,7 +20,22 @@ pub struct SubscriberManagerArgs {
     pub broker_id: String,
 }
 
-
+impl SubscriberManager {
+    /// Removes all subscriptions for a given session
+    fn forget_subscriptions(registration_id: Option<String>, subscriptions: HashMap<String, Vec<String>> ) {
+        //cleanup all subscriptions for session
+        registration_id.map(|registration_id: String|{
+            info!("Cleaning up subscribers for session {registration_id:?}");
+            for topic in subscriptions.keys() {
+                let subscriber_name = format!("{registration_id}:{topic}");
+                match where_is(subscriber_name.clone()) {
+                    Some(subscriber) => subscriber.stop(Some("CLIENT_UNSUBSCRIBED".to_string())),
+                    None => warn!("Couldn't find subscription {subscriber_name}")
+                }
+            }
+        });
+    }
+}
 #[async_trait]
 impl Actor for SubscriberManager {
     type Msg = BrokerMessage; // Messages this actor handles
@@ -155,18 +170,22 @@ impl Actor for SubscriberManager {
                     None => todo!()
                 }
             },
+            BrokerMessage::DisconnectRequest { registration_id , ..} => {
+                SubscriberManager::forget_subscriptions(registration_id, state.subscriptions.clone());
+            }
             BrokerMessage::TimeoutMessage { registration_id, .. } => {
-                //cleanup all subscriptions for session
-                info!("Cleaning up subscribers for client {registration_id:?}");
-                registration_id.map(|registration_id: String|{
-                    for topic in state.subscriptions.keys() {
-                        let subscriber_name = format!("{registration_id}:{topic}");
-                        match where_is(subscriber_name.clone()) {
-                           Some(subscriber) => subscriber.stop(None),
-                           None => warn!("Couldn't find subscription {subscriber_name}")
-                         }
-                    }
-                });
+                SubscriberManager::forget_subscriptions(registration_id, state.subscriptions.clone());
+                // //cleanup all subscriptions for session
+                // info!("Cleaning up subscribers for session {registration_id:?}");
+                // registration_id.map(|registration_id: String|{
+                //     for topic in state.subscriptions.keys() {
+                //         let subscriber_name = format!("{registration_id}:{topic}");
+                //         match where_is(subscriber_name.clone()) {
+                //            Some(subscriber) => subscriber.stop(None),
+                //            None => warn!("Couldn't find subscription {subscriber_name}")
+                //          }
+                //     }
+                // });
             }
             _ => todo!()
 

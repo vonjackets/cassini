@@ -131,12 +131,23 @@ impl Actor for SessionManager {
                     }, None => warn!("Couldn't find broker supervisor")
                 }
             }
-            BrokerMessage::PingMessage { registration_id, client_id } => {
-                //reset ping count for session
-                debug!("Received ping for session {registration_id}");
-                let session = state.sessions.get_mut(&registration_id).expect("Failed to lookup session for id: {registration_id}");
-                session.ping_count = 0;
-                session.agent_ref.send_message(BrokerMessage::PongMessage { registration_id: registration_id.clone() }).expect("Failed to send pong message to session {registration_id}");
+            BrokerMessage::DisconnectRequest { client_id, registration_id } => {
+                //forward to broker, kill session
+                if let Some(registration_id) = registration_id {
+                    match where_is(registration_id.clone()) {
+                        Some(session) => session.stop(Some("CLIENT_DISCONNECTED".to_owned())),
+                        None => warn!("Failed to find session {registration_id}")
+                    }
+
+                    match myself.try_get_supervisor() {
+                        Some(broker) => broker.send_message(
+                            BrokerMessage::DisconnectRequest { client_id, registration_id: Some(registration_id) })
+                            .expect("Expected to forward message"),
+
+                        None => warn!("Failed to find supervisor")
+                    }
+                    
+                }
             }
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                warn!("Session {registration_id:?} timing out, waiting for reconnect...");
@@ -314,10 +325,14 @@ impl Actor for SessionAgent {
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result } => {        
                 state.client_ref.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result }).expect("Failed to forward subscribe ack to client");
             }
-            BrokerMessage::DisconnectRequest { client_id } => {
+            BrokerMessage::DisconnectRequest { client_id,registration_id } => {
                 //client disconnected, clean up after it then die with honor
                 debug!("client {client_id} disconnected");
-                myself.stop(Some("DISCONNECT".to_string()));
+                match myself.try_get_supervisor() {
+                    Some(manager) => manager.send_message(BrokerMessage::DisconnectRequest { client_id, registration_id }).expect("Expected to forward to manager"),
+                    None=> tracing::error!("Couldn't find supervisor.")
+                }
+                
             }
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 match myself.try_get_supervisor() {

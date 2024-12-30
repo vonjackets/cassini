@@ -67,7 +67,8 @@ pub enum BrokerMessage {
     },
     /// Disconnect request from the client.
     DisconnectRequest {
-        client_id: String, //listener id
+        client_id: String,
+        registration_id: Option<String>
     },
     /// Error message to the client.
     ErrorMessage {
@@ -171,7 +172,8 @@ impl BrokerMessage {
             
             ClientMessage::DisconnectRequest(client_id) => {
                 BrokerMessage::DisconnectRequest {
-                    client_id
+                    client_id,
+                    registration_id
                 }
             },
             ClientMessage::TimeoutMessage(registration_id) => BrokerMessage::TimeoutMessage { client_id, registration_id: Some(registration_id), error: None },

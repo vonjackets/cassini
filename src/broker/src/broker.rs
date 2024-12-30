@@ -185,6 +185,24 @@ impl Actor for Broker {
             BrokerMessage::ErrorMessage { error, .. } => {
                 warn!("Error Received: {error}");
             },
+            BrokerMessage::DisconnectRequest { client_id, registration_id } => {
+                //start cleanup
+                info!("Cleaning up session {registration_id:?}");
+                if let Some(manager) = &state.subscriber_manager {
+                    manager.send_message(BrokerMessage::DisconnectRequest {
+                        client_id: client_id.clone(),
+                        registration_id: registration_id.clone(),
+                    }).expect("Expected to forward message");
+                    
+                }
+                // Tell listener manager to kill listener, it's not coming back
+                if let Some(manager) = &state.listener {
+                    manager.send_message(BrokerMessage::DisconnectRequest {
+                        client_id: client_id.clone(),
+                        registration_id,
+                    }).expect("Expected to forward message");
+                }
+            }
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 //cleanup subscribers
                 
