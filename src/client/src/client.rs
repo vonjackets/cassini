@@ -1,9 +1,14 @@
 use std::sync::Arc;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, DnsName, IpAddr, PrivateKeyDer, ServerName};
+use rustls::ClientConfig;
+use tokio::io::{self, split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use common::ClientMessage;
 use tokio::sync::Mutex;
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
 
@@ -18,18 +23,24 @@ pub enum TcpClientMessage {
 /// Actor state for the TCP client
 pub struct TcpClientState {
     bind_addr: String,
-    writer: Option<Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>>,
-    reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    writer: Option<Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>>>,
+    reader: Option<ReadHalf<TlsStream<TcpStream>>>, // Use Option to allow taking ownership
     registration_id: Option<String>,
+    client_config: Arc<ClientConfig>,
     
 }
 
 pub struct TcpClientArgs {
     pub bind_addr: String,
+    //TOOD: Just pass in the finished config
+    pub ca_cert_file: String,
+    pub client_cert_file: String,
+    pub private_key_file: String,
     pub registration_id: Option<String>
 }
 
 /// TCP client actor
+/// TODO: Implement mTLS for connections to the message broker using rustls and tokio
 pub struct TcpClientActor;
 
 #[async_trait]
@@ -43,7 +54,16 @@ impl Actor for TcpClientActor {
         args: TcpClientArgs) -> Result<Self::State, ActorProcessingErr> {
         info!("TCP Client Actor starting...");
                         
-        let state = TcpClientState { bind_addr: args.bind_addr, reader: None, writer: None, registration_id: args.registration_id };
+        let mut root_cert_store = rustls::RootCertStore::empty();
+        let _ = root_cert_store.add(CertificateDer::from_pem_file(args.ca_cert_file).expect("Expected to read server cert as pem"));
+    
+        let client_cert = CertificateDer::from_pem_file(args.client_cert_file).expect("Expected to read server cert as pem");
+        let private_key = PrivateKeyDer::from_pem_file(args.private_key_file).unwrap();
+
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_cert_store).with_client_auth_cert(vec![client_cert], private_key).unwrap();
+
+        let state = TcpClientState { bind_addr: args.bind_addr, reader: None, writer: None, registration_id: args.registration_id , client_config: Arc::new(config)};
 
         Ok(state)
     }
@@ -54,11 +74,17 @@ impl Actor for TcpClientActor {
         state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
         
         let addr = state.bind_addr.clone();
-        info!("{myself:?} started. Connecting to {addr} ");
         
-        let stream = TcpStream::connect(&addr).await.expect("Failed to connect to {addr}");
-                
-        let (reader, write_half) = stream.into_split();
+        let connector = TlsConnector::from(Arc::clone(&state.client_config));
+        
+        let tcp_stream = TcpStream::connect(&addr).await.expect("Failed to connect to {addr}");
+        
+        //TODO: establish better "Common Name" for the broker server
+        let domain = ServerName::try_from("polar").expect("invalid DNS name");
+        info!("{myself:?} started. Connecting to {addr} ");
+        let tls_stream = connector.connect(domain, tcp_stream).await.expect("Expcted to finish handshake");
+
+        let (reader, write_half) = split(tls_stream);
         
         let writer = tokio::io::BufWriter::new(write_half);
         
@@ -67,6 +93,8 @@ impl Actor for TcpClientActor {
      
         info!("{myself:?} Listening... ");
         let reader = tokio::io::BufReader::new(state.reader.take().expect("Reader already taken!"));
+
+        
         //start listening
         let _ = tokio::spawn(async move {
             let mut buf = String::new();
@@ -144,7 +172,7 @@ impl Actor for TcpClientActor {
                 let msg = format!("{str}\n");
                 debug!("{msg}");
                 let unwrapped_writer = state.writer.clone().unwrap();
-                let mut writer: tokio::sync::MutexGuard<'_, io::BufWriter<tokio::net::tcp::OwnedWriteHalf>> = unwrapped_writer.lock().await;        
+                let mut writer = unwrapped_writer.lock().await;        
                 let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
 
                 writer.flush().await.expect("Expected buffer to get flushed");

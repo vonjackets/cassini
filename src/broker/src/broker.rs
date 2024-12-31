@@ -24,6 +24,9 @@ pub struct BrokerArgs {
     /// The amount of time (in seconds) before a session times out
     /// Should be between 10 and 300 seconds
     pub session_timeout: Option<u64>,
+    pub server_cert_file: String,
+    pub private_key_file: String,
+    pub ca_cert_file: String
 }
 
 #[async_trait]
@@ -44,7 +47,10 @@ impl Actor for Broker {
         let mut handles = Vec::new();
         //clone actor re
         handles.push(tokio::spawn(async move {
-            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, ListenerManagerArgs { bind_addr: args.bind_addr}).await.expect("Failed to start listener manager");
+
+
+            let args =  ListenerManagerArgs {bind_addr: args.bind_addr, server_cert_file: args.server_cert_file, private_key_file: args.private_key_file, ca_cert_file: args.ca_cert_file };
+            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager,args).await.expect("Failed to start listener manager");
             handle.await.expect("Failed");
         }));
 

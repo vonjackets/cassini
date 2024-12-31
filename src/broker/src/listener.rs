@@ -1,7 +1,8 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, net::TcpListener, sync::Mutex};
+use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, ServerConfig};
+use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{debug, error, info, warn};
 use std::{ collections::HashMap, sync::Arc};
-
 
 use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
@@ -11,17 +12,26 @@ use common::{BrokerMessage, ClientMessage, BROKER_NAME};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
+
+
+
+
 // ============================== Listener Manager ============================== //
 /// The actual listener/server process. When clients connect to the server, their stream is split and 
 /// given to a worker processes to use to interact with and handle that connection with the client.
+/// TODO: Implement mTLS for the broker server using provided certificates. 
 pub struct ListenerManager;
 pub struct ListenerManagerState {
     listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
     bind_addr: String,
+    server_config: Arc<ServerConfig>
 }
 
 pub struct ListenerManagerArgs {
     pub bind_addr: String,
+    pub server_cert_file: String,
+    pub private_key_file: String,
+    pub ca_cert_file: String
 }
 
 #[async_trait]
@@ -36,13 +46,31 @@ impl Actor for ListenerManager {
         args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Starting {myself:?}");
+
         //link with supervisor
         match where_is(BROKER_NAME.to_string()) {
             Some(broker) => myself.link(broker),
             None => warn!("Couldn't link with broker supervisor!")
         }
+
+        debug!("Trying to configure mTLS");
+        //TODO: Read cert chain in as array of bytes, first cert should be the server cert itself, followed by the root_CA cert
+        // let server_cert = CertificateDer::from_pem_file(args.server_cert_file).expect("Expected to read server cert as pem");
+        let private_key = PrivateKeyDer::from_pem_file(args.private_key_file).unwrap();
+        
+        let certs = CertificateDer::pem_file_iter(args.server_cert_file)
+        .unwrap()
+        .map(|cert| cert.unwrap())
+        .collect();
+
+        let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, private_key)
+        .expect("bad certificate/key");
+
+
         //set up state object
-        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr };
+        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr, server_config: Arc::new(server_config) };
         info!("ListenerManager: Agent starting");
         Ok(state)
     }
@@ -52,21 +80,27 @@ impl Actor for ListenerManager {
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
 
         let bind_addr = state.bind_addr.clone();
+        let acceptor = TlsAcceptor::from(Arc::clone(&state.server_config));
 
         let server = TcpListener::bind(bind_addr.clone()).await.expect("could not start tcp listener");
         
         info!("ListenerManager: Server running on {bind_addr}");
-        
+
         let _ = tokio::spawn(async move {
             
                while let Ok((stream, _)) = server.accept().await {
-                    
+
+                        let acceptor = acceptor.clone();
+                        
+                        let stream = acceptor.accept(stream).await.expect("Expected to complete tls handshake");
+
                         // Generate a unique client ID
                         let client_id = uuid::Uuid::new_v4().to_string();
                         
                         // Create and start a new Listener actor for this connection
                         
-                        let (reader, writer) = stream.into_split();
+                        let (reader, writer) = split(stream);
+
                         let writer = tokio::io::BufWriter::new(writer);
                         
                         let listener_args = ListenerArguments {
@@ -153,22 +187,22 @@ impl Actor for ListenerManager {
 struct Listener;
 
 struct ListenerState {
-    writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
-    reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>>,
+    reader: Option<ReadHalf<TlsStream<TcpStream>>>, 
     client_id: String,
     registration_id: Option<String>,
 }
-//TDOD: Establish why we use this vs passing a state obj?
+
 struct ListenerArguments {
-    writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
-    reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>>,
+    reader: Option<ReadHalf<TlsStream<TcpStream>>>, 
     client_id: String,
     registration_id: Option<String>,
 }
 
 impl Listener {
 
-    async fn write(client_id: String, msg: ClientMessage, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
+    async fn write(client_id: String, msg: ClientMessage, writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>> )  {
         match serde_json::to_string(&msg) {
             Ok(serialized) => {
                 tokio::spawn( async move {
