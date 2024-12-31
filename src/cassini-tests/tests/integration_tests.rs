@@ -3,7 +3,7 @@
 mod tests {
 
     use core::panic;
-    use cassini_client::client::{self, TcpClientArgs};
+    use cassini_client::client::TcpClientArgs;
     use cassini_server::broker::{Broker, BrokerArgs};
     use common::BROKER_NAME;
     use ractor::{async_trait, ActorProcessingErr, ActorRef, SupervisionEvent};
@@ -180,7 +180,7 @@ mod tests {
 
             let client_handle = tokio::spawn(async move {
 
-                let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
+                let (client, _) = Actor::spawn_linked(Some("test_client".to_owned()),
                 TcpClientActor,
                 TcpClientArgs {
                     bind_addr: BIND_ADDR.to_string(),
@@ -205,9 +205,6 @@ mod tests {
                 client.send_message(TcpClientMessage::Send(
                     ClientMessage::DisconnectRequest(Some(session_id))
                 )).expect("Expected to forward msg");
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
                 
             });
 
