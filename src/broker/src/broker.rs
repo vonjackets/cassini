@@ -221,13 +221,14 @@ impl Actor for Broker {
                     
                 }
                 // Tell listener manager to kill listener, it's not coming back
-                if let Some(manager) = &state.listener {
-                    manager.send_message(BrokerMessage::TimeoutMessage {
-                        client_id: client_id.clone(),
-                        registration_id,
-                        error
-                    }).expect("Expected to forward message");
-                }
+                // NOTE: This no longer needs to be done now that listener stops itself.
+                // if let Some(manager) = &state.listener {
+                //     manager.send_message(BrokerMessage::TimeoutMessage {
+                //         client_id: client_id.clone(),
+                //         registration_id,
+                //         error
+                //     }).expect("Expected to forward message");
+                // }
                 
             }
             _ => warn!("Received unexepcted message {message:?}")

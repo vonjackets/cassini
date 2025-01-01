@@ -1,4 +1,6 @@
 #![allow(clippy::incompatible_msrv)]
+use std::env;
+
 use cassini_server::broker::{Broker, BrokerArgs};
 
 use common::{init_logging, BROKER_NAME};
@@ -12,10 +14,12 @@ use ractor::Actor;
 async fn main() {
     init_logging();
     //start supervisor
-    //TODO: Read configurations from somewhere
-    let server_cert_file = String::from("/Users/vacoates/projects/cassini/src/broker/certs/server_polar_certificate_chain.pem");
-    let private_key_file = String::from("/Users/vacoates/projects/cassini/src/broker/certs/server_polar_key.pem");
-    let ca_cert_file = String::from("/Users/vacoates/projects/cassini/ca_certificates/ca_certificate.pem");
+    
+    let server_cert_file = env::var("TLS_SERVER_CERT_CHAIN").unwrap();
+    let private_key_file = env::var("TLS_SERVER_KEY").unwrap();
+    let ca_cert_file = env::var("TLS_CA_CERT").unwrap();
+
+
 
     let args = BrokerArgs { bind_addr: String::from("127.0.0.1:8080"), session_timeout: None, server_cert_file , private_key_file, ca_cert_file  };
     let (_broker, handle) = Actor::spawn(Some(BROKER_NAME.to_string()), Broker, args)

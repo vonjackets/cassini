@@ -253,7 +253,7 @@ impl Actor for SubscriberAgent {
         match message {
             BrokerMessage::PublishResponse { topic, payload, result } => {                
                 let id = state.registration_id.clone();
-                tracing::debug!("Received notification of message on topic: {topic}, forwarding to session: {id}");
+                tracing::debug!("New message on topic: {topic}, forwarding to session: {id}");
                 state.session_agent_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("Failed to forward message to session");
                 //TODO: Store dead letter queue here in case of failure to send to session
             },

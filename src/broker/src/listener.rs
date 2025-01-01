@@ -54,8 +54,7 @@ impl Actor for ListenerManager {
         }
 
         debug!("Trying to configure mTLS");
-        //TODO: Read cert chain in as array of bytes, first cert should be the server cert itself, followed by the root_CA cert
-        // let server_cert = CertificateDer::from_pem_file(args.server_cert_file).expect("Expected to read server cert as pem");
+        
         let private_key = PrivateKeyDer::from_pem_file(args.private_key_file).unwrap();
         
         let certs = CertificateDer::pem_file_iter(args.server_cert_file)
@@ -256,6 +255,7 @@ impl Actor for Listener {
                 buf.clear();
                 match buf_reader.read_line(&mut buf).await {
                     Ok(bytes) => {
+                        
                         if bytes > 0 {
                             
                             if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
@@ -279,18 +279,25 @@ impl Actor for Listener {
                             // Handle client disconnection, populate state in handler
                             myself.send_message(BrokerMessage::TimeoutMessage { client_id: String::default(), registration_id: None, error: Some(e.to_string()) } ).unwrap();
                             warn!("Client {id} disconnected: {e}");
+                            //TODO: Now that we have mTLS, the listener is more fickle, when this error emits,
+                            // The buf_reader goes back to awaiting a line that will never come, this prompts a tweak to the timeout flow
+                            // Instead of waiting for the listenerManager to kill this actor, kill it after forwarding the timeout message,
+                            // and update the session registration_request to check whether it's resuming or creating a new session
+                            break;
                     }
                 } 
+            
+                
             }
         });
         Ok(())
     }
 
     async fn post_stop(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-
         debug!("Successfully stopped {myself:?}");
         Ok(())
     }
+
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -299,33 +306,31 @@ impl Actor for Listener {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id } => {
-                
-                
-                if registration_id.is_some(){
-                    
-                    if registration_id == state.registration_id {
-                        let session_id = &state.registration_id.clone().unwrap();
+                //if we got some session_id
+                if registration_id.is_some() {
+                        let session_id = registration_id.clone().unwrap();
                         //send message to session that it has a new listener for it to get messages from
                         match where_is(session_id.clone()) {
                             Some(session) => {
                                 info!("Resuming session: {session_id}!");
+                                state.registration_id = Some(session_id.clone());
                                 session.send_message(
                                     BrokerMessage::RegistrationRequest {
                                     registration_id: Some(session_id.to_owned()), client_id
                                 })
                                 .expect("Expected to send new client_id to new session");
 
-                            }, None => {error!("Could not find session with id {session_id} for client: {client_id}") }
+                            }, None => { 
+                                //if we can't find it, inform the client
+                                warn!("Received registration request for invalid session: {registration_id:?}");
+                                Listener::write(
+                                    client_id,
+                                    ClientMessage::RegistrationResponse
+                                        { registration_id: registration_id.unwrap(), success: false,  error: Some(String::from("Unexpected session id")) },
+                                    Arc::clone(&state.writer))
+                                    .await;
+                            }
                         }
-                    } else { 
-                        warn!("Received registration request for unexpected session: {registration_id:?}");
-                        Listener::write(
-                            client_id,
-                            ClientMessage::RegistrationResponse
-                                { registration_id: registration_id.unwrap(), success: false,  error: Some(String::from("Unexpected session id")) },
-                            Arc::clone(&state.writer))
-                            .await;
-                     }
                 } else {
                     // Forward to broker to begin creating new session and wait for response.
                     match where_is(BROKER_NAME.to_string()) {
@@ -335,7 +340,6 @@ impl Actor for Listener {
                         } None => todo!()
                     }
                 }
-
             }
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 if success {
@@ -421,6 +425,7 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
             BrokerMessage::DisconnectRequest { client_id, registration_id } => {
+                info!("Client {client_id} disconnected. Ending Session");
                 if registration_id == state.registration_id && registration_id.is_some() {
                     //if we're registered, propogate to session agent
                             let id = registration_id.unwrap();
@@ -445,11 +450,13 @@ impl Actor for Listener {
                 //Client timed out, if we were registered, let session know
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                        warn!("Listener: {myself:?} timed out");
+                        warn!("Listener: {myself:?} disconnected unexpectedly!");
                         session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
                      }),
                     _ => ()
                 }
+                myself.stop(Some("TIMEDOUT".to_string()));
+                
             }
             _ => {
                 warn!(UNEXPECTED_MESSAGE_STR)

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, DnsName, IpAddr, PrivateKeyDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
-use tokio::io::{self, split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf};
+use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use common::ClientMessage;
 use tokio::sync::Mutex;
@@ -74,16 +74,16 @@ impl Actor for TcpClientActor {
         state: &mut Self::State ) ->  Result<(), ActorProcessingErr> {
         
         let addr = state.bind_addr.clone();
-        
+        info!("{myself:?} started. Connecting to {addr}...");
         let connector = TlsConnector::from(Arc::clone(&state.client_config));
         
         let tcp_stream = TcpStream::connect(&addr).await.expect("Failed to connect to {addr}");
         
         //TODO: establish better "Common Name" for the broker server
         let domain = ServerName::try_from("polar").expect("invalid DNS name");
-        info!("{myself:?} started. Connecting to {addr} ");
+        
         let tls_stream = connector.connect(domain, tcp_stream).await.expect("Expcted to finish handshake");
-
+        info!("mTLS connection established. ");
         let (reader, write_half) = split(tls_stream);
         
         let writer = tokio::io::BufWriter::new(write_half);
