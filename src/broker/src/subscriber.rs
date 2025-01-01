@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
 
@@ -185,7 +185,7 @@ impl Actor for SubscriberManager {
     async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
-            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}", actor_cell.get_name()); }
+            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}, {reason:?}", actor_cell.get_name()); }
             SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
             SupervisionEvent::ProcessGroupChanged(..) => (),
         }

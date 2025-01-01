@@ -42,18 +42,18 @@ mod tests {
             Ok(())
         }
 
-        async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
             
             match msg {
-                SupervisionEvent::ActorStarted(actor_cell) => (),
-                SupervisionEvent::ActorTerminated(actor_cell, boxed_state, reason) => {
+                SupervisionEvent::ActorStarted(_) => (),
+                SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
                     println!("Session: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
                 },
-                SupervisionEvent::ActorFailed(actor_cell, error) => {
+                SupervisionEvent::ActorFailed(actor_cell, _) => {
                     println!("Error: actor {0:?}:{1:?} Should not have failed", actor_cell.get_name(), actor_cell.get_id());
                     panic!()
                 },
-                SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+                SupervisionEvent::ProcessGroupChanged(..) => todo!(),
             }    
             
             Ok(())

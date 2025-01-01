@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
@@ -59,9 +60,10 @@ impl Actor for TcpClientActor {
     
         let client_cert = CertificateDer::from_pem_file(args.client_cert_file).expect("Expected to read server cert as pem");
         let private_key = PrivateKeyDer::from_pem_file(args.private_key_file).unwrap();
+        let verifier = WebPkiServerVerifier::builder(Arc::new(root_cert_store)).build().expect("Expected to build server verifier");
 
         let config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_cert_store).with_client_auth_cert(vec![client_cert], private_key).unwrap();
+            .with_webpki_verifier(verifier).with_client_auth_cert(vec![client_cert], private_key).unwrap();
 
         let state = TcpClientState { bind_addr: args.bind_addr, reader: None, writer: None, registration_id: args.registration_id , client_config: Arc::new(config)};
 

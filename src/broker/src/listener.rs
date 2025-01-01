@@ -1,4 +1,4 @@
-use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, ServerConfig};
+use rustls::{client::WebPkiServerVerifier, pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, server::WebPkiClientVerifier, RootCertStore, ServerConfig};
 use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{debug, error, info, warn};
@@ -62,8 +62,13 @@ impl Actor for ListenerManager {
         .map(|cert| cert.unwrap())
         .collect();
 
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(CertificateDer::from_pem_file(args.ca_cert_file).expect("Expected to read server cert as pem")).unwrap();
+    
+        let verifier = WebPkiClientVerifier::builder(Arc::new(root_store)).build().expect("Expected to build server verifier");
+
         let server_config = ServerConfig::builder()
-        .with_no_client_auth()
+        .with_client_cert_verifier(verifier)
         .with_single_cert(certs, private_key)
         .expect("bad certificate/key");
 
