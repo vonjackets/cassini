@@ -1,7 +1,8 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, net::TcpListener, sync::Mutex};
+use rustls::{client::WebPkiServerVerifier, pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, server::WebPkiClientVerifier, RootCertStore, ServerConfig};
+use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{debug, error, info, warn};
 use std::{ collections::HashMap, sync::Arc};
-
 
 use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
@@ -11,17 +12,26 @@ use common::{BrokerMessage, ClientMessage, BROKER_NAME};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
+
+
+
+
 // ============================== Listener Manager ============================== //
 /// The actual listener/server process. When clients connect to the server, their stream is split and 
 /// given to a worker processes to use to interact with and handle that connection with the client.
+/// TODO: Implement mTLS for the broker server using provided certificates. 
 pub struct ListenerManager;
 pub struct ListenerManagerState {
     listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
     bind_addr: String,
+    server_config: Arc<ServerConfig>
 }
 
 pub struct ListenerManagerArgs {
     pub bind_addr: String,
+    pub server_cert_file: String,
+    pub private_key_file: String,
+    pub ca_cert_file: String
 }
 
 #[async_trait]
@@ -36,13 +46,35 @@ impl Actor for ListenerManager {
         args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Starting {myself:?}");
+
         //link with supervisor
         match where_is(BROKER_NAME.to_string()) {
             Some(broker) => myself.link(broker),
             None => warn!("Couldn't link with broker supervisor!")
         }
+
+        debug!("Trying to configure mTLS");
+        
+        let private_key = PrivateKeyDer::from_pem_file(args.private_key_file).unwrap();
+        
+        let certs = CertificateDer::pem_file_iter(args.server_cert_file)
+        .unwrap()
+        .map(|cert| cert.unwrap())
+        .collect();
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(CertificateDer::from_pem_file(args.ca_cert_file).expect("Expected to read server cert as pem")).unwrap();
+    
+        let verifier = WebPkiClientVerifier::builder(Arc::new(root_store)).build().expect("Expected to build server verifier");
+
+        let server_config = ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, private_key)
+        .expect("bad certificate/key");
+
+
         //set up state object
-        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr };
+        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr, server_config: Arc::new(server_config) };
         info!("ListenerManager: Agent starting");
         Ok(state)
     }
@@ -52,21 +84,27 @@ impl Actor for ListenerManager {
     async fn post_start(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
 
         let bind_addr = state.bind_addr.clone();
+        let acceptor = TlsAcceptor::from(Arc::clone(&state.server_config));
 
         let server = TcpListener::bind(bind_addr.clone()).await.expect("could not start tcp listener");
         
         info!("ListenerManager: Server running on {bind_addr}");
-        
+
         let _ = tokio::spawn(async move {
             
                while let Ok((stream, _)) = server.accept().await {
-                    
+
+                        let acceptor = acceptor.clone();
+                        
+                        let stream = acceptor.accept(stream).await.expect("Expected to complete tls handshake");
+
                         // Generate a unique client ID
                         let client_id = uuid::Uuid::new_v4().to_string();
                         
                         // Create and start a new Listener actor for this connection
                         
-                        let (reader, writer) = stream.into_split();
+                        let (reader, writer) = split(stream);
+
                         let writer = tokio::io::BufWriter::new(writer);
                         
                         let listener_args = ListenerArguments {
@@ -153,22 +191,22 @@ impl Actor for ListenerManager {
 struct Listener;
 
 struct ListenerState {
-    writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
-    reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>>,
+    reader: Option<ReadHalf<TlsStream<TcpStream>>>, 
     client_id: String,
     registration_id: Option<String>,
 }
-//TDOD: Establish why we use this vs passing a state obj?
+
 struct ListenerArguments {
-    writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>,
-    reader: Option<tokio::net::tcp::OwnedReadHalf>, // Use Option to allow taking ownership
+    writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>>,
+    reader: Option<ReadHalf<TlsStream<TcpStream>>>, 
     client_id: String,
     registration_id: Option<String>,
 }
 
 impl Listener {
 
-    async fn write(client_id: String, msg: ClientMessage, writer: Arc<Mutex<tokio::io::BufWriter<tokio::net::tcp::OwnedWriteHalf>>>)  {
+    async fn write(client_id: String, msg: ClientMessage, writer: Arc<Mutex<BufWriter<WriteHalf<TlsStream<TcpStream>>>>> )  {
         match serde_json::to_string(&msg) {
             Ok(serialized) => {
                 tokio::spawn( async move {
@@ -222,6 +260,7 @@ impl Actor for Listener {
                 buf.clear();
                 match buf_reader.read_line(&mut buf).await {
                     Ok(bytes) => {
+                        
                         if bytes > 0 {
                             
                             if let Ok(msg) = serde_json::from_str::<ClientMessage>(&buf) {
@@ -245,18 +284,25 @@ impl Actor for Listener {
                             // Handle client disconnection, populate state in handler
                             myself.send_message(BrokerMessage::TimeoutMessage { client_id: String::default(), registration_id: None, error: Some(e.to_string()) } ).unwrap();
                             warn!("Client {id} disconnected: {e}");
+                            //TODO: Now that we have mTLS, the listener is more fickle, when this error emits,
+                            // The buf_reader goes back to awaiting a line that will never come, this prompts a tweak to the timeout flow
+                            // Instead of waiting for the listenerManager to kill this actor, kill it after forwarding the timeout message,
+                            // and update the session registration_request to check whether it's resuming or creating a new session
+                            break;
                     }
                 } 
+            
+                
             }
         });
         Ok(())
     }
 
     async fn post_stop(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-
         debug!("Successfully stopped {myself:?}");
         Ok(())
     }
+
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -265,33 +311,31 @@ impl Actor for Listener {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id } => {
-                
-                
-                if registration_id.is_some(){
-                    
-                    if registration_id == state.registration_id {
-                        let session_id = &state.registration_id.clone().unwrap();
+                //if we got some session_id
+                if registration_id.is_some() {
+                        let session_id = registration_id.clone().unwrap();
                         //send message to session that it has a new listener for it to get messages from
                         match where_is(session_id.clone()) {
                             Some(session) => {
                                 info!("Resuming session: {session_id}!");
+                                state.registration_id = Some(session_id.clone());
                                 session.send_message(
                                     BrokerMessage::RegistrationRequest {
                                     registration_id: Some(session_id.to_owned()), client_id
                                 })
                                 .expect("Expected to send new client_id to new session");
 
-                            }, None => {error!("Could not find session with id {session_id} for client: {client_id}") }
+                            }, None => { 
+                                //if we can't find it, inform the client
+                                warn!("Received registration request for invalid session: {registration_id:?}");
+                                Listener::write(
+                                    client_id,
+                                    ClientMessage::RegistrationResponse
+                                        { registration_id: registration_id.unwrap(), success: false,  error: Some(String::from("Unexpected session id")) },
+                                    Arc::clone(&state.writer))
+                                    .await;
+                            }
                         }
-                    } else { 
-                        warn!("Received registration request for unexpected session: {registration_id:?}");
-                        Listener::write(
-                            client_id,
-                            ClientMessage::RegistrationResponse
-                                { registration_id: registration_id.unwrap(), success: false,  error: Some(String::from("Unexpected session id")) },
-                            Arc::clone(&state.writer))
-                            .await;
-                     }
                 } else {
                     // Forward to broker to begin creating new session and wait for response.
                     match where_is(BROKER_NAME.to_string()) {
@@ -301,7 +345,6 @@ impl Actor for Listener {
                         } None => todo!()
                     }
                 }
-
             }
             BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
                 if success {
@@ -387,6 +430,7 @@ impl Actor for Listener {
                 Listener::write(registration_id.clone(), response, Arc::clone(&state.writer)).await;
             },
             BrokerMessage::DisconnectRequest { client_id, registration_id } => {
+                info!("Client {client_id} disconnected. Ending Session");
                 if registration_id == state.registration_id && registration_id.is_some() {
                     //if we're registered, propogate to session agent
                             let id = registration_id.unwrap();
@@ -411,11 +455,13 @@ impl Actor for Listener {
                 //Client timed out, if we were registered, let session know
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                        warn!("Listener: {myself:?} timed out");
+                        warn!("Listener: {myself:?} disconnected unexpectedly!");
                         session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
                      }),
                     _ => ()
                 }
+                myself.stop(Some("TIMEDOUT".to_string()));
+                
             }
             _ => {
                 warn!(UNEXPECTED_MESSAGE_STR)

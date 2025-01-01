@@ -1,2 +1,5 @@
 */target
 */*/target
+ca_certificates
+certs
+.env

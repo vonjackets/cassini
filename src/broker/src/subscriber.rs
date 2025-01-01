@@ -1,7 +1,7 @@
-use std::collections::{hash_map::Iter, HashMap};
+use std::collections::HashMap;
 
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use common::{BrokerMessage, BROKER_NAME};
 
@@ -185,7 +185,7 @@ impl Actor for SubscriberManager {
     async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
-            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}", actor_cell.get_name()); }
+            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}, {reason:?}", actor_cell.get_name()); }
             SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
             SupervisionEvent::ProcessGroupChanged(..) => (),
         }
@@ -253,7 +253,7 @@ impl Actor for SubscriberAgent {
         match message {
             BrokerMessage::PublishResponse { topic, payload, result } => {                
                 let id = state.registration_id.clone();
-                tracing::debug!("Received notification of message on topic: {topic}, forwarding to session: {id}");
+                tracing::debug!("New message on topic: {topic}, forwarding to session: {id}");
                 state.session_agent_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("Failed to forward message to session");
                 //TODO: Store dead letter queue here in case of failure to send to session
             },

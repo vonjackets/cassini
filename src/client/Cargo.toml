@@ -14,6 +14,8 @@ tracing-subscriber = { version ="0.3.19", features=["std", "env-filter"]}
 common = { path = "../common" }
 async-trait = "0.1.83"
 ractor = { version="0.14.1"}
+rustls = "0.23.20"
+tokio-rustls = "0.26.1"
 [[bin]]
 name="cassini-client"
 path="src/main.rs"

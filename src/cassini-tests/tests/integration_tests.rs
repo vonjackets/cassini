@@ -3,6 +3,7 @@
 mod tests {
 
     use core::panic;
+    use std::env;
     use cassini_client::client::{self, TcpClientArgs};
     use cassini_server::broker::{Broker, BrokerArgs};
     use common::BROKER_NAME;
@@ -41,18 +42,18 @@ mod tests {
             Ok(())
         }
 
-        async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+        async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
             
             match msg {
-                SupervisionEvent::ActorStarted(actor_cell) => (),
-                SupervisionEvent::ActorTerminated(actor_cell, boxed_state, reason) => {
+                SupervisionEvent::ActorStarted(_) => (),
+                SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
                     println!("Session: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
                 },
-                SupervisionEvent::ActorFailed(actor_cell, error) => {
+                SupervisionEvent::ActorFailed(actor_cell, _) => {
                     println!("Error: actor {0:?}:{1:?} Should not have failed", actor_cell.get_name(), actor_cell.get_id());
                     panic!()
                 },
-                SupervisionEvent::ProcessGroupChanged(group_change_message) => todo!(),
+                SupervisionEvent::ProcessGroupChanged(..) => todo!(),
             }    
             
             Ok(())
@@ -64,12 +65,12 @@ mod tests {
         //start listener manager to listen for incoming connections
         common::init_logging();
         
-        let _ = tokio::spawn(async {
+        
             let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
             let broker_supervisor = supervisor.clone();
 
-            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None };
+            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None, server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
 
             let _ = tokio::spawn(async move {
                 //start supervisor
@@ -87,7 +88,10 @@ mod tests {
             let _ = tokio::spawn(async {
                 let (client, handle) = Actor::spawn(Some("test_client".to_owned()), TcpClientActor, TcpClientArgs {
                     bind_addr: BIND_ADDR.to_string(),
-                    registration_id: None
+                    registration_id: None,
+                    client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                    private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                    ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
                 }).await.expect("Failed to start client actor");    
             
 
@@ -97,123 +101,127 @@ mod tests {
                 
             }).await;
             
-        }).await.expect("Expected test to pass");
+        
 
     }
     #[tokio::test]
     async fn test_client_registers_successfully() {
         common::init_logging();
-        let _ = tokio::spawn(async {
-            let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+        let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
-            let broker_supervisor = supervisor.clone();
-            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None };
-            let _ = tokio::spawn(async move {
-                //start supervisor
-                let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
-                    .await
-                    .expect("Failed to start Broker");
-                
-                
-                
-                handle.await.expect("Something went wrong");
-            });
+        let broker_supervisor = supervisor.clone();
+        let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None, server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
+        let _ = tokio::spawn(async move {
+            //start supervisor
+            let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                .await
+                .expect("Failed to start Broker");
+            
+            
+            
+            handle.await.expect("Something went wrong");
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let client_supervisor: ActorRef<()> = supervisor.clone();
+
+        tokio::spawn(async move{
+            let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: None,
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::RegistrationRequest { registration_id: None }
+            )).unwrap();
 
             tokio::time::sleep(Duration::from_secs(1)).await;
             
-            let client_supervisor: ActorRef<()> = supervisor.clone();
+            let session_id = client
+            .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(10)))
+            .await.unwrap().unwrap();
 
-            let client_handle = tokio::spawn(async move{
-                let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
-                TcpClientActor,
-                TcpClientArgs {
-                    bind_addr: BIND_ADDR.to_string(),
-                    registration_id: None
-                },
-                client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+            assert_ne!(session_id, String::default());
 
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::RegistrationRequest { registration_id: None }
-                )).unwrap();
+            handle.await.expect("expected to start actor");
+            
+        }).await.expect("Expected client to register successfully");
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                
-                let session_id = client
-                .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(10)))
-                .await.unwrap().unwrap();
-
-                assert_ne!(session_id, String::default());
-                
-                client.kill();
-
-                handle.await.expect("expected to start actor");
-                
-            });
-
-        let _ = client_handle.await;
-
-        }).await.expect("Expected test to pass");
+        
+        
     }
 
     #[tokio::test]
     async fn test_registered_client_disconnect() {
         common::init_logging();
-        let _ = tokio::spawn(async {
-            let (supervisor, supervisor_handle) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+    
+        let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
-            let broker_supervisor = supervisor.clone();
-            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None };
-            let _ = tokio::spawn(async move {
-                //start supervisor
-                let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
-                    .await
-                    .expect("Failed to start Broker");
-                
-                
-                
-                handle.await.expect("Something went wrong");
-            });
+        let broker_supervisor = supervisor.clone();
+        let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None, server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
+        let _ = tokio::spawn(async move {
+            //start supervisor
+            let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                .await
+                .expect("Failed to start Broker");
+            
+            
+            
+            handle.await.expect("Something went wrong");
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let client_supervisor: ActorRef<()> = supervisor.clone();
+
+        tokio::spawn(async move {
+
+            let (client, _) = Actor::spawn_linked(Some("test_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: None,
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::RegistrationRequest { registration_id: None }
+            )).unwrap();
 
             tokio::time::sleep(Duration::from_secs(1)).await;
             
-            let client_supervisor: ActorRef<()> = supervisor.clone();
+            //disconnect
 
-            let client_handle = tokio::spawn(async move {
+            let session_id = client
+            .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(3)))
+            .await.unwrap().unwrap();
 
-                let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
-                TcpClientActor,
-                TcpClientArgs {
-                    bind_addr: BIND_ADDR.to_string(),
-                    registration_id: None
-                },
-                client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+            assert_ne!(session_id, String::default());
 
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::RegistrationRequest { registration_id: None }
-                )).unwrap();
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::DisconnectRequest(Some(session_id))
+            )).expect("Expected to forward msg");
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                
-                //disconnect
+            tokio::time::sleep(Duration::from_secs(1)).await;
 
-                let session_id = client
-                .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(3)))
-                .await.unwrap().unwrap();
 
-                assert_ne!(session_id, String::default());
+            
+        }).await.expect("Expected client to register with broker, then disconnect gracefully");
 
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::DisconnectRequest(Some(session_id))
-                )).expect("Expected to forward msg");
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                
-            });
-
-        let _ = client_handle.await;
+    
         
-        }).await.expect("Expected test to pass");
+        
     }
 
 
@@ -224,157 +232,161 @@ mod tests {
     #[tokio::test]
     async fn test_session_timeout() {
         common::init_logging();
-        let _ = tokio::spawn(async {
-            let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+        
+        let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
-            let broker_supervisor = supervisor.clone();
-            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: Some(10) };
-            let _ = tokio::spawn(async move {
-                let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
-                    .await
-                    .expect("Failed to start Broker");
-                
-                
-                
-                handle.await.expect("Something went wrong");
-            });
+        let broker_supervisor = supervisor.clone();
+
+        let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: Some(3), server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
+
+        let _ = tokio::spawn(async move {
+            let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                .await
+                .expect("Failed to start Broker");
+            
+            handle.await.expect("Something went wrong");
+        });
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        
+        let client_supervisor: ActorRef<()> = supervisor.clone();
+
+        let _ = tokio::spawn(async move {
+            let (client, client_handle) = Actor::spawn_linked(Some("test_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: None,
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::RegistrationRequest { registration_id: None }
+            )).unwrap();
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let session_id = client
+            .call(TcpClientMessage::GetRegistrationId,
+                Some(Duration::from_secs(3)))
+            .await.unwrap().unwrap();
+
+            assert_ne!(session_id, String::default());
+            
 
             tokio::time::sleep(Duration::from_secs(1)).await;
             
-            let client_supervisor: ActorRef<()> = supervisor.clone();
+            //create some subscription
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::SubscribeRequest { 
+                    registration_id: Some(session_id.clone()),
+                    topic: String::from("Apples")
+                }
+            )).unwrap();
 
-            let client_handle = tokio::spawn(async move{
-                let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
-                TcpClientActor,
-                TcpClientArgs {
-                    bind_addr: BIND_ADDR.to_string(),
-                    registration_id: None
-                },
-                client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+            tokio::time::sleep(Duration::from_secs(1)).await;
 
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::RegistrationRequest { registration_id: None }
-                )).unwrap();
+            //disconnect
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::TimeoutMessage(Some(session_id))
+            )).expect("Expected to foward msg");
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let session_id = client
-                .call(TcpClientMessage::GetRegistrationId,
-                    Some(Duration::from_secs(3)))
-                .await.unwrap().unwrap();
-
-                assert_ne!(session_id, String::default());
-                
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                
-                //create some subscription
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::SubscribeRequest { 
-                        registration_id: Some(session_id.clone()),
-                        topic: String::from("Apples")
-                    }
-                )).unwrap();
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                //disconnect
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::TimeoutMessage(Some(session_id))
-                )).expect("Expected to foward msg");
-
-                //wait a moment before ending test
-                client.kill_after(Duration::from_secs(15));
-
-                handle.await.expect("expected to start actor");
-                
-            });
-
-        let _ = client_handle.await;
-
-        }).await.expect("Expected test to pass");
+            client.kill_after(Duration::from_secs(8)).await.expect("Client should've died");
+            
+        }).await.expect("Expected client to send messages");
+        
     }
 
     /// Confirms clients that get disconnected unexpectedly can resume their session and keep subscriptions
     #[tokio::test]
     async fn test_client_reconnect_after_timeout() {
         common::init_logging();
-        let _ = tokio::spawn(async {
-            let (supervisor, supervisor_handle) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+    
+        let (supervisor, supervisor_handle) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
-            let broker_supervisor = supervisor.clone();
+        let broker_supervisor = supervisor.clone();
 
-            let _ = tokio::spawn(async move {
-                let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: Some(10) };
-                //start supervisor
-                let (broker, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
-                    .await
-                    .expect("Failed to start Broker");
-                
-                broker.kill_after(Duration::from_secs(10));
-                
-                handle.await.expect("Something went wrong");
-            });
+        let _ = tokio::spawn( async move {
+            let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None, server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
+            //start supervisor
+            let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                .await
+                .expect("Failed to start Broker");
+            handle.await.expect("Expected Broker to run");
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let client_supervisor: ActorRef<()> = supervisor.clone();
+
+        let _ = tokio::spawn(async move{
+            let (client, _) = Actor::spawn_linked(Some("test_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: None,
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::RegistrationRequest { registration_id: None }
+            )).unwrap();
 
             tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let session_id = client
+            .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(10)))
+            .await.unwrap().unwrap();
+
+            //subscribe to topic
+            let topic = String::from("Apples");
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::SubscribeRequest { topic: topic.clone(), registration_id: Some(session_id.clone())}
+            )).expect("Expected to foward msg");
+
+            // wait a moment, then force timeout and kill first client
+            tokio::time::sleep(Duration::from_secs(3)).await;
             
-            let client_supervisor: ActorRef<()> = supervisor.clone();
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::TimeoutMessage(Some(session_id.clone()))
+            )).expect("Expected to foward msg");
 
-            let client_handle = tokio::spawn(async move{
-                let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
-                TcpClientActor,
-                TcpClientArgs {
-                    bind_addr: BIND_ADDR.to_string(),
-                    registration_id: None
-                },
-                client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+            //create new client, connect and send registration request with same session_id
+            let (new_client, _) = Actor::spawn_linked(Some("new_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: Some(session_id.clone()),
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
 
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::RegistrationRequest { registration_id: None }
-                )).unwrap();
+            let cloned_id = session_id.clone();
+            // send new registration request with same registration_id to resume session
+            let _ = new_client.send_after(Duration::from_secs(1), || {
+                TcpClientMessage::Send(
+                    ClientMessage::RegistrationRequest { registration_id: Some(cloned_id) }
+                )
+            } ).await.expect("Expected to send re registration request");
+            
+            //Publish messsage
+            let _ = new_client.send_message( TcpClientMessage::Send(ClientMessage::PublishRequest { topic, payload: "Hello apple".to_string(), registration_id: Some(session_id.clone())}));
+            
+        }).await;
+        
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let session_id = client
-                .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(10)))
-                .await.unwrap().unwrap();
-
-                //subscribe to topic
-                let topic = String::from("Apples");
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::SubscribeRequest { topic: topic.clone(), registration_id: Some(session_id.clone())}
-                )).expect("Expected to foward msg");
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                // Force timeout
-                client.send_message(TcpClientMessage::Send(
-                    ClientMessage::TimeoutMessage(Some(session_id.clone()))
-                )).expect("Expected to foward msg");
-
-                let cloned_id = session_id.clone();
-                // send new registration request with same registration_id to resume session
-                let _ = client.send_after(Duration::from_secs(3), || {
-                    TcpClientMessage::Send(
-                        ClientMessage::RegistrationRequest { registration_id: Some(cloned_id) }
-                    )
-                } ).await.expect("Expected to send re registration request");
-                
-                //Publish messsage
-                let _ = client.send_message( TcpClientMessage::Send(ClientMessage::PublishRequest { topic, payload: "Hello apple".to_string(), registration_id: Some(session_id.clone())}));
-
-                client.kill();
-
-                handle.await.expect("expected client not to panic");
-                
-            });
-
-
-            let _ = client_handle.await; 
-            let _ = supervisor_handle.await;
-
-
-        }).await.expect("Expected test to pass");
+        supervisor.stop_children(None);
+        let _ = supervisor.stop_and_wait(None, Some(Duration::from_secs(1))).await;
+        
     }
 
 }

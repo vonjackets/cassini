@@ -1,7 +1,7 @@
 use tracing::{info, warn};
 use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
 use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
-use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -9,13 +9,7 @@ use ractor::{async_trait, concurrency::JoinHandle, registry::where_is, Actor, Ac
 pub struct Broker;
 
 //State object containing references to worker actors.
-pub struct BrokerState {
-    listener: Option<ActorRef<BrokerMessage>>,
-    topic_manager: Option<ActorRef<BrokerMessage>>,
-    session_manager: Option<ActorRef<BrokerMessage>>,
-    subscriber_manager: Option<ActorRef<BrokerMessage>>,
-    handles: Vec<JoinHandle<()>>
-}
+pub struct BrokerState;
 /// Would-be configurations for the broker actor itself, as well its workers
 #[derive(Clone)]
 pub struct BrokerArgs {
@@ -24,6 +18,9 @@ pub struct BrokerArgs {
     /// The amount of time (in seconds) before a session times out
     /// Should be between 10 and 300 seconds
     pub session_timeout: Option<u64>,
+    pub server_cert_file: String,
+    pub private_key_file: String,
+    pub ca_cert_file: String
 }
 
 #[async_trait]
@@ -44,7 +41,10 @@ impl Actor for Broker {
         let mut handles = Vec::new();
         //clone actor re
         handles.push(tokio::spawn(async move {
-            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, ListenerManagerArgs { bind_addr: args.bind_addr}).await.expect("Failed to start listener manager");
+
+
+            let args =  ListenerManagerArgs {bind_addr: args.bind_addr, server_cert_file: args.server_cert_file, private_key_file: args.private_key_file, ca_cert_file: args.ca_cert_file };
+            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager,args).await.expect("Failed to start listener manager");
             handle.await.expect("Failed");
         }));
 
@@ -78,45 +78,23 @@ impl Actor for Broker {
             handle.await.expect("????");
         }));
 
-        let state = BrokerState {
-            listener: None,
-            topic_manager: None,
-            session_manager: None,
-            subscriber_manager: None,
-            handles: handles
-        };
+        let state = BrokerState;
         Ok(state)
     }
 
-    async fn handle_supervisor_evt(&self, _myself: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-        
+    async fn handle_supervisor_evt(&self, _myself: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
-            SupervisionEvent::ActorStarted(actor_cell) => {
-                match actor_cell.get_name() {
-                 Some(name)   => {
-                    info!("Worker agent: {name}:{0:?} started", actor_cell.get_id());
-                    let worker = ActorRef::from(actor_cell);
-                    if name == LISTENER_MANAGER_NAME { state.listener = Some(worker.clone())}
-                    else if name == SESSION_MANAGER_NAME  { state.session_manager = Some(worker.clone())}
-                    else if name == TOPIC_MANAGER_NAME    { state.topic_manager = Some(worker.clone())}
-                    else if name == SUBSCRIBER_MANAGER_NAME { state.subscriber_manager = Some(worker.clone())}
-                 },
-                 None => todo!()
-                }
-            }
-            SupervisionEvent::ActorTerminated(actor_cell, ..) => {
-                
+            SupervisionEvent::ActorStarted(actor_cell) => info!("Worker agent: {0:?}:{1:?} started", actor_cell.get_name(), actor_cell.get_id()),
+            
+            SupervisionEvent::ActorTerminated(actor_cell, ..) => info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id()),
+            
+            SupervisionEvent::ActorFailed(actor_cell, _) => {
+                warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
                 //determine type of actor that failed and restart
                 //NOTE: "Remote" actors can't have their types checked? But they do send serializable messages
                 // If we can deserialize them to a datatype here, that may be another acceptable means of determining type
-                if let Some(_) = actor_cell.is_message_type_of::<BrokerMessage>() {
-                    info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id());
-                    //TODO: Start new actor in its own thread as to not interrupt this one
-                }
-                
-            }
-            SupervisionEvent::ActorFailed(actor_cell, _) => {
-                warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
+                //TODO: Start new actor in its own thread as to not interrupt this one
+
             },
             SupervisionEvent::ProcessGroupChanged(_) => todo!(),
         }
@@ -138,7 +116,7 @@ impl Actor for Broker {
         //TODO: Implement? The master node seems purely responsible for managing actor lifecycles, doesn't really do any message brokering on its own
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id } => {                
-                match &state.session_manager
+                match &where_is(SESSION_MANAGER_NAME.to_string())
                 {
                     Some(session_mgr) => {
                         session_mgr.send_message(BrokerMessage::RegistrationRequest { registration_id, client_id }).expect("Failed to forward registration response to listener manager");
@@ -188,7 +166,7 @@ impl Actor for Broker {
             BrokerMessage::DisconnectRequest { client_id, registration_id } => {
                 //start cleanup
                 info!("Cleaning up session {registration_id:?}");
-                if let Some(manager) = &state.subscriber_manager {
+                if let Some(manager) = where_is(SUBSCRIBER_MANAGER_NAME.to_string()) {
                     manager.send_message(BrokerMessage::DisconnectRequest {
                         client_id: client_id.clone(),
                         registration_id: registration_id.clone(),
@@ -196,7 +174,7 @@ impl Actor for Broker {
                     
                 }
                 // Tell listener manager to kill listener, it's not coming back
-                if let Some(manager) = &state.listener {
+                if let Some(manager) = where_is(LISTENER_MANAGER_NAME.to_string()) {
                     manager.send_message(BrokerMessage::DisconnectRequest {
                         client_id: client_id.clone(),
                         registration_id,
@@ -206,7 +184,7 @@ impl Actor for Broker {
             BrokerMessage::TimeoutMessage { client_id, registration_id, error } => {
                 //cleanup subscribers
                 
-                if let Some(manager) = &state.subscriber_manager {
+                if let Some(manager) = where_is(SUBSCRIBER_MANAGER_NAME.to_string()) {
                     manager.send_message(BrokerMessage::TimeoutMessage {
                         client_id: client_id.clone(),
                         registration_id: registration_id.clone(),
@@ -215,13 +193,14 @@ impl Actor for Broker {
                     
                 }
                 // Tell listener manager to kill listener, it's not coming back
-                if let Some(manager) = &state.listener {
-                    manager.send_message(BrokerMessage::TimeoutMessage {
-                        client_id: client_id.clone(),
-                        registration_id,
-                        error
-                    }).expect("Expected to forward message");
-                }
+                // NOTE: This no longer needs to be done now that listener stops itself.
+                // if let Some(manager) = &state.listener {
+                //     manager.send_message(BrokerMessage::TimeoutMessage {
+                //         client_id: client_id.clone(),
+                //         registration_id,
+                //         error
+                //     }).expect("Expected to forward message");
+                // }
                 
             }
             _ => warn!("Received unexepcted message {message:?}")

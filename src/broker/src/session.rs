@@ -261,20 +261,19 @@ impl Actor for SessionAgent {
     ) -> Result<(), ActorProcessingErr>  {
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id, .. } => {
-                //A previously dropped connection has been reestablished, update state to send messages to new listener actor
+                //A a new connection has been established, update state to send messages to new listener actor
                 match where_is(client_id.clone()) {
-                    Some(listener) => {
-                        
+                    Some(listener) => {     
                         state.client_ref = ActorRef::from(listener);
                         //ack
-                        debug!("Re-established comms with client {client_id}");
+                        info!("Established comms with client {client_id}");
                         state.client_ref.send_message(BrokerMessage::RegistrationResponse {
                             registration_id: registration_id.clone(),
                             client_id: client_id.clone(),
                             success: true,
                             error: None })
                         .expect("Expected to send ack to listener");
-                        // Alert session manager that our client is back so it doesn't kill the actor
+                        // Alert session manager we've got our listener so it doesn't potentially kill it
                         match myself.try_get_supervisor() {
                             Some(manager) => manager.send_message(BrokerMessage::RegistrationResponse { registration_id, client_id, success: true , error: None }).expect("Expected to send message to manager"),
                             None => warn!("Couldn't find supervisor for session agent!")
