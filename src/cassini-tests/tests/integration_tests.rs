@@ -4,13 +4,12 @@ mod tests {
 
     use core::panic;
     use std::env;
-    use cassini_client::client::{self, TcpClientArgs};
-    use cassini_server::broker::{Broker, BrokerArgs};
-    use common::BROKER_NAME;
+    use cassini::broker::{Broker, BrokerArgs};
+    use cassini::client::{TcpClientActor, TcpClientMessage, TcpClientArgs};
     use ractor::{async_trait, ActorProcessingErr, ActorRef, SupervisionEvent};
     use ractor::{concurrency::Duration, Actor};
-    use cassini_client::client::{TcpClientActor, TcpClientMessage};
-    use common::ClientMessage;
+    
+    use cassini::{ClientMessage, BROKER_NAME};
 
     //Bind to some other port if desired
     pub const BIND_ADDR: &str = "127.0.0.1:8080";
@@ -63,7 +62,7 @@ mod tests {
     #[tokio::test]
     async fn test_tcp_client_connect() {
         //start listener manager to listen for incoming connections
-        common::init_logging();
+        cassini::init_logging();
         
         
             let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
@@ -106,7 +105,7 @@ mod tests {
     }
     #[tokio::test]
     async fn test_client_registers_successfully() {
-        common::init_logging();
+        cassini::init_logging();
         let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
         let broker_supervisor = supervisor.clone();
@@ -161,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registered_client_disconnect() {
-        common::init_logging();
+        cassini::init_logging();
     
         let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
@@ -231,7 +230,7 @@ mod tests {
     /// that session.
     #[tokio::test]
     async fn test_session_timeout() {
-        common::init_logging();
+        cassini::init_logging();
         
         let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 
@@ -303,7 +302,7 @@ mod tests {
     /// Confirms clients that get disconnected unexpectedly can resume their session and keep subscriptions
     #[tokio::test]
     async fn test_client_reconnect_after_timeout() {
-        common::init_logging();
+        cassini::init_logging();
     
         let (supervisor, supervisor_handle) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
 

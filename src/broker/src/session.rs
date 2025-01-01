@@ -3,7 +3,7 @@ use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRe
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use common::{BrokerMessage, BROKER_NAME};
+use crate::{BrokerMessage, BROKER_NAME};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 

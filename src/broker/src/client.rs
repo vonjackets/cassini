@@ -6,7 +6,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
 use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use common::ClientMessage;
+use crate::ClientMessage;
 use tokio::sync::Mutex;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
@@ -41,7 +41,6 @@ pub struct TcpClientArgs {
 }
 
 /// TCP client actor
-/// TODO: Implement mTLS for connections to the message broker using rustls and tokio
 pub struct TcpClientActor;
 
 #[async_trait]

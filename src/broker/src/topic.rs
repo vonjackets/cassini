@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, error, warn};
-use common::{BrokerMessage, BROKER_NAME};
+use crate::{BrokerMessage, BROKER_NAME};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -17,8 +17,8 @@ pub struct TopicManagerState {
 
 pub struct  TopicManagerArgs {
     pub topics: Option<Vec<String>>,
-    pub broker_id: String,
 }
+
 
 #[async_trait]
 impl Actor for TopicManager {

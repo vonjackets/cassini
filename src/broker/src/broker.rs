@@ -1,6 +1,6 @@
-use tracing::{info, warn};
-use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::{SubscriberManager, SubscriberManagerArgs}, topic::{TopicManager, TopicManagerArgs}};
-use common::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
+use tracing::{error, info, warn};
+use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::SubscriberManager, topic::{TopicManager, TopicManagerArgs}, UNEXPECTED_MESSAGE_STR};
+use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
@@ -28,7 +28,6 @@ impl Actor for Broker {
     type Msg = BrokerMessage;
     type State = BrokerState;
     type Arguments = BrokerArgs;
-
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -36,47 +35,30 @@ impl Actor for Broker {
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("Broker: Starting {myself:?}");
         
-        //start listener manager to listen for incoming connections
+        let listener_manager_args =  ListenerManagerArgs {
+            bind_addr: args.bind_addr,
+            server_cert_file: args.server_cert_file,
+            private_key_file: args.private_key_file,
+            ca_cert_file: args.ca_cert_file
+        };
 
-        let mut handles = Vec::new();
-        //clone actor re
-        handles.push(tokio::spawn(async move {
+        Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, listener_manager_args).await.expect("Expected to start Listener Manager");
 
 
-            let args =  ListenerManagerArgs {bind_addr: args.bind_addr, server_cert_file: args.server_cert_file, private_key_file: args.private_key_file, ca_cert_file: args.ca_cert_file };
-            let (_, handle) = Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager,args).await.expect("Failed to start listener manager");
-            handle.await.expect("Failed");
-        }));
-
-        
+        //set default timeout for sessions, or use args
         let mut session_timeout: u64 = 90;
         if let Some(timeout) = args.session_timeout {
             session_timeout = timeout;
         }
-        handles.push(tokio::spawn(async move {
-            let session_mgr_args = SessionManagerArgs {
-                session_timeout: session_timeout 
-            };
-            let (_, handle) = Actor::spawn(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, session_mgr_args).await.expect("");
-            handle.await.expect("????");
-        }));
 
-        handles.push(tokio::spawn(async move {
-        //TODO: read these from configuration
-            let topic_mgr_args = TopicManagerArgs {topics: None, broker_id: "BrokerSupervisor".to_string()};
-            // start topic manager
-            let (_, handle) = Actor::spawn(Some(TOPIC_MANAGER_NAME.to_owned()), TopicManager, topic_mgr_args).await.expect("Could not start topic manager agent");    
-            handle.await.expect("????");
-        }));
+        Actor::spawn(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, SessionManagerArgs { session_timeout: session_timeout }).await.expect("Expected Session Manager to start");
 
-        //let subscriber_mgr_args = SubscriberManagerArgs { topic_mgr_ref: topic_manager.clone(), session_manager_ref: session_mgr.clone() };
-        handles.push(tokio::spawn(async move {
-            let subscriber_mgr_args = SubscriberManagerArgs {
-                broker_id: "BrokerSupervisor".to_string()
-            };
-            let (_, handle) = Actor::spawn(Some(SUBSCRIBER_MANAGER_NAME.to_string()), SubscriberManager, subscriber_mgr_args).await.expect("Failed to start subscriber manager");
-            handle.await.expect("????");
-        }));
+        //TODO: Read some topics from configuration based on services we want to observer/consumer messages for
+        let topic_mgr_args = TopicManagerArgs {topics: None};
+
+        Actor::spawn(Some(TOPIC_MANAGER_NAME.to_owned()), TopicManager, topic_mgr_args).await.expect("Expected to start Topic Manager");    
+
+        Actor::spawn(Some(SUBSCRIBER_MANAGER_NAME.to_string()), SubscriberManager, ()).await.expect("Expected to start Subscriber Manager");
 
         let state = BrokerState;
         Ok(state)
@@ -88,15 +70,17 @@ impl Actor for Broker {
             
             SupervisionEvent::ActorTerminated(actor_cell, ..) => info!("Worker {0:?}:{1:?} terminated, restarting..", actor_cell.get_name(), actor_cell.get_id()),
             
-            SupervisionEvent::ActorFailed(actor_cell, _) => {
-                warn!("Worker agent: {0:?}:{1:?} failed!", actor_cell.get_name(), actor_cell.get_id());
+            SupervisionEvent::ActorFailed(actor_cell, e) => {
+                warn!("Worker agent: {0:?}:{1:?} failed! {e}", actor_cell.get_name(), actor_cell.get_id());
                 //determine type of actor that failed and restart
                 //NOTE: "Remote" actors can't have their types checked? But they do send serializable messages
                 // If we can deserialize them to a datatype here, that may be another acceptable means of determining type
-                //TODO: Start new actor in its own thread as to not interrupt this one
+                //TODO: Figure out what panics/failures we can/can't recover from
+                // Missing certificate files and the inability to forward some messages count as bad states
+                _myself.stop(Some("ACTOR_FAILED".to_string()));
 
             },
-            SupervisionEvent::ProcessGroupChanged(_) => todo!(),
+            SupervisionEvent::ProcessGroupChanged(_) => (),
         }
 
         Ok(())
@@ -111,7 +95,7 @@ impl Actor for Broker {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
-        state: &mut Self::State,
+        _: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         //TODO: Implement? The master node seems purely responsible for managing actor lifecycles, doesn't really do any message brokering on its own
         match message {
@@ -143,7 +127,6 @@ impl Actor for Broker {
             },
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
                 //send to topic manager
-
                 match where_is(TOPIC_MANAGER_NAME.to_owned()) {
                     Some(actor) => {
                         actor.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).expect("Failed to forward subscribeRequest to topic manager");
@@ -153,12 +136,11 @@ impl Actor for Broker {
                 
             }
             BrokerMessage::PublishResponse { topic, payload, result } => {
-                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).map_or_else(|| {
-                    tracing::error!("Failed to lookup subscriber manager!");
-                    //TOOD: ?
-                }, |actor| {
-                    actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager");
-                });
+                match where_is(SUBSCRIBER_MANAGER_NAME.to_owned()) {
+                    Some(actor) => actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager"),
+                    None => tracing::error!("Failed to lookup subscriber manager!")
+                } 
+                
             },
             BrokerMessage::ErrorMessage { error, .. } => {
                 warn!("Error Received: {error}");
@@ -192,18 +174,8 @@ impl Actor for Broker {
                     }).expect("Expected to forward message");
                     
                 }
-                // Tell listener manager to kill listener, it's not coming back
-                // NOTE: This no longer needs to be done now that listener stops itself.
-                // if let Some(manager) = &state.listener {
-                //     manager.send_message(BrokerMessage::TimeoutMessage {
-                //         client_id: client_id.clone(),
-                //         registration_id,
-                //         error
-                //     }).expect("Expected to forward message");
-                // }
-                
             }
-            _ => warn!("Received unexepcted message {message:?}")
+            _ => warn!(UNEXPECTED_MESSAGE_STR)
         }
         Ok(())
     }

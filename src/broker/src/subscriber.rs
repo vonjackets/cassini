@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{debug, error, warn};
 
-use common::{BrokerMessage, BROKER_NAME};
-
+use crate::{BrokerMessage, BROKER_NAME};
 use crate::UNEXPECTED_MESSAGE_STR;
 
 /// Our supervisor for the subscribers
@@ -17,9 +16,6 @@ pub struct SubscriberManager;
 /// Define the state for the actor
 pub struct SubscriberManagerState {
     subscriptions: HashMap<String, Vec<String>> // Map of topics to list subscriber ids
-}
-pub struct SubscriberManagerArgs {
-    pub broker_id: String,
 }
 
 impl SubscriberManager {
@@ -41,12 +37,12 @@ impl SubscriberManager {
 impl Actor for SubscriberManager {
     type Msg = BrokerMessage; // Messages this actor handles
     type State = SubscriberManagerState; // Internal state
-    type Arguments = SubscriberManagerArgs;
+    type Arguments = ();
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: SubscriberManagerArgs
+        _: ()
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::debug!("{myself:?} starting");
 

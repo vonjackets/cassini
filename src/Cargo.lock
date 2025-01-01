@@ -163,28 +163,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
 
 [[package]]
-name = "cassini_client"
+name = "cassini"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "common",
- "ractor",
- "rustls",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-glog",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cassini_server"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "common",
  "ractor",
  "rustls",
  "serde",
@@ -202,9 +184,7 @@ dependencies = [
 name = "cassini_tests"
 version = "0.1.0"
 dependencies = [
- "cassini_client",
- "cassini_server",
- "common",
+ "cassini",
  "ractor",
  "tokio",
 ]
@@ -267,19 +247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c682c223677e0e5b6b7f63a64b9351844c3f1b1678a68b7ee617e30fb082620e"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "common"
-version = "0.1.0"
-dependencies = [
- "ractor",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-glog",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,9 +1,8 @@
 #![allow(clippy::incompatible_msrv)]
 use std::env;
 
-use cassini_server::broker::{Broker, BrokerArgs};
+use cassini::{broker::{Broker, BrokerArgs}, init_logging, BROKER_NAME};
 
-use common::{init_logging, BROKER_NAME};
 use ractor::Actor;
 
 
@@ -25,6 +24,7 @@ async fn main() {
     let (_broker, handle) = Actor::spawn(Some(BROKER_NAME.to_string()), Broker, args)
         .await
         .expect("Failed to start Broker");
-    //CAUTION: Don't touch
+    
     handle.await.expect("Something went wrong");
+
 }

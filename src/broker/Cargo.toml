@@ -1,5 +1,5 @@
 [package]
-name = "cassini_server"
+name = "cassini"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,10 +13,10 @@ tracing = "0.1.41"
 tracing-glog = "0.4.0"
 tracing-subscriber = { version ="0.3.19", features=["std", "env-filter"]}
 uuid = { version = "1.11.0", features = ["v4"] }
-common = { path = "../common" }
 tokio-util = "0.7.13"
 rustls = "0.23.20"
 tokio-rustls = "0.26.1"
+
 [[bin]]
 name = "cassini-server"
 path = "src/main.rs"
