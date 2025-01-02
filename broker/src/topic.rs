@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, error, warn};
-use crate::{BrokerMessage, BROKER_NAME};
+use crate::{BrokerMessage};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -55,12 +55,6 @@ impl Actor for TopicManager {
         let mut state  = TopicManagerState{
             topics: HashMap::new()            
         };
-        //link with supervisor
-        match where_is(BROKER_NAME.to_string()) {
-            Some(broker) => myself.link(broker),
-            None => todo!()
-        }
-        
         
         if let Some(topics) = args.topics {
             for topic in topics {

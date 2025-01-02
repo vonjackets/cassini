@@ -42,7 +42,7 @@ impl Actor for Broker {
             ca_cert_file: args.ca_cert_file
         };
 
-        Actor::spawn(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, listener_manager_args).await.expect("Expected to start Listener Manager");
+        Actor::spawn_linked(Some(LISTENER_MANAGER_NAME.to_owned()), ListenerManager, listener_manager_args, myself.clone().into()).await.expect("Expected to start Listener Manager");
 
 
         //set default timeout for sessions, or use args
@@ -51,14 +51,14 @@ impl Actor for Broker {
             session_timeout = timeout;
         }
 
-        Actor::spawn(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, SessionManagerArgs { session_timeout: session_timeout }).await.expect("Expected Session Manager to start");
+        Actor::spawn_linked(Some(SESSION_MANAGER_NAME.to_string()), SessionManager, SessionManagerArgs { session_timeout: session_timeout }, myself.clone().into()).await.expect("Expected Session Manager to start");
 
         //TODO: Read some topics from configuration based on services we want to observer/consumer messages for
         let topic_mgr_args = TopicManagerArgs {topics: None};
 
-        Actor::spawn(Some(TOPIC_MANAGER_NAME.to_owned()), TopicManager, topic_mgr_args).await.expect("Expected to start Topic Manager");    
+        Actor::spawn_linked(Some(TOPIC_MANAGER_NAME.to_owned()), TopicManager, topic_mgr_args, myself.clone().into()).await.expect("Expected to start Topic Manager");    
 
-        Actor::spawn(Some(SUBSCRIBER_MANAGER_NAME.to_string()), SubscriberManager, ()).await.expect("Expected to start Subscriber Manager");
+        Actor::spawn_linked(Some(SUBSCRIBER_MANAGER_NAME.to_string()), SubscriberManager, (), myself.clone().into()).await.expect("Expected to start Subscriber Manager");
 
         let state = BrokerState;
         Ok(state)

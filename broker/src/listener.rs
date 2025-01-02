@@ -41,12 +41,6 @@ impl Actor for ListenerManager {
         args: ListenerManagerArgs
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("ListenerManager: Starting {myself:?}");
-
-        //link with supervisor
-        match where_is(BROKER_NAME.to_string()) {
-            Some(broker) => myself.link(broker),
-            None => warn!("Couldn't link with broker supervisor!")
-        }
                 
         let certs = CertificateDer::pem_file_iter(args.server_cert_file)
         .unwrap()

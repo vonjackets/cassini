@@ -46,12 +46,6 @@ impl Actor for SubscriberManager {
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::debug!("{myself:?} starting");
 
-        //link with supervisor
-        
-        match where_is(BROKER_NAME.to_string()) {
-            Some(broker) => myself.link(broker),
-            None => todo!()
-        }
         //parse args. if any
         let state = SubscriberManagerState { subscriptions: HashMap::new()};
         Ok(state)

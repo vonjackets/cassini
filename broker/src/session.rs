@@ -65,12 +65,6 @@ impl Actor for SessionManager {
     }
     async fn post_start(&self, myself: ActorRef<Self::Msg>, _state: &mut Self::State) -> Result<(), ActorProcessingErr> {
         debug!("{myself:?} started");
-        //link with supervisor
-        match where_is(BROKER_NAME.to_string()) {
-            Some(broker) => myself.link(broker),
-            None => warn!("Couldn't link with broker supervisor")
-        }
-        
   
         Ok(())
     }
