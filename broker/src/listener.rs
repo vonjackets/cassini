@@ -2,7 +2,7 @@ use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, server:
 use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{debug, error, info, warn};
-use std::{ collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use async_trait::async_trait;
@@ -18,7 +18,6 @@ use crate::UNEXPECTED_MESSAGE_STR;
 
 pub struct ListenerManager;
 pub struct ListenerManagerState {
-    listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
     bind_addr: String,
     server_config: Arc<ServerConfig>
 }
@@ -69,7 +68,7 @@ impl Actor for ListenerManager {
 
 
         //set up state object
-        let state = ListenerManagerState { listeners: HashMap::new(), bind_addr: args.bind_addr, server_config: Arc::new(server_config) };
+        let state = ListenerManagerState { bind_addr: args.bind_addr, server_config: Arc::new(server_config) };
         info!("ListenerManager: Agent starting");
         Ok(state)
     }
@@ -117,7 +116,7 @@ impl Actor for ListenerManager {
         Ok(())
     }
 
-    async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
+    async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         
         match msg {
             SupervisionEvent::ActorStarted(actor_cell) => {
