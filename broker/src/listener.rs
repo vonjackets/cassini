@@ -12,14 +12,10 @@ use crate::{BrokerMessage, ClientMessage, BROKER_NAME};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
-
-
-
-
 // ============================== Listener Manager ============================== //
 /// The actual listener/server process. When clients connect to the server, their stream is split and 
 /// given to a worker processes to use to interact with and handle that connection with the client.
-/// TODO: Implement mTLS for the broker server using provided certificates. 
+
 pub struct ListenerManager;
 pub struct ListenerManagerState {
     listeners: HashMap<String, ActorRef<BrokerMessage>>, //client_ids : listenerAgent mapping
@@ -440,11 +436,11 @@ impl Actor for Listener {
                     
                 
             }
-            BrokerMessage::TimeoutMessage {error, .. } => {
+            BrokerMessage::TimeoutMessage {error, client_id, .. } => {
                 //Client timed out, if we were registered, let session know
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                        warn!("Listener: {myself:?} disconnected unexpectedly!");
+                        warn!("Listener: {client_id} disconnected unexpectedly!");
                         session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: error }).expect("Expected to forward message to session.")
                      }),
                     _ => ()

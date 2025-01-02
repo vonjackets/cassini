@@ -3,3 +3,5 @@
 ca_certificates
 certs
 .env
+bin
+result

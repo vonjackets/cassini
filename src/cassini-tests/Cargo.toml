@@ -1,9 +1,0 @@
-[package]
-name = "cassini_tests"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-cassini = {path = "../broker"}
-ractor = { version="0.14.1"}
-tokio = { version = "1.30", features = ["full"] }
