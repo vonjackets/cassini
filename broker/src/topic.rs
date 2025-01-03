@@ -1,9 +1,15 @@
 use std::collections::{HashMap, VecDeque};
+
+
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, error, warn};
-use crate::{BrokerMessage};
+use crate::{BrokerMessage, SESSION_NOT_FOUND_TXT, BROKER_NOT_FOUND_TXT,};
 
 use crate::UNEXPECTED_MESSAGE_STR;
+
+pub const TOPIC_ADD_FAILED_TXT: &str = "Failed to add topic \"{topic}!\"";
+
+
 
 // ============================== Topic Supervisor definition ============================== //
 /// Our supervisor for managing topics and their message queues
@@ -60,7 +66,7 @@ impl Actor for TopicManager {
             for topic in topics {
                 //start topic actors for that topic
                 
-                match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
+                match Actor::spawn_linked(Some(topic.clone()), TopicAgent, TopicAgentArgs {subscribers: None}, myself.clone().into()).await {
                     Ok((actor, _)) => {
                         state.topics.insert(topic.clone(), actor.clone());
                     },
@@ -99,9 +105,9 @@ impl Actor for TopicManager {
                     topic_actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id), topic , payload}).expect("Failed for forward publish request")
                 } else {
                     warn!("No agent set to handle topic: {topic}, starting new agent...");    
-                    //TODO: spin up new topic actor if topic doesn't exist?
+                    
 
-                    match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
+                    match Actor::spawn_linked(Some(topic.clone()), TopicAgent, TopicAgentArgs {subscribers: None }, myself.clone().into()).await {
                     
                     Ok((actor, _)) => {
                         state.topics.insert(topic.clone(), actor.clone());
@@ -123,41 +129,25 @@ impl Actor for TopicManager {
             BrokerMessage::PublishResponse { topic, payload, .. } => {
                 //forward to broker
                 match myself.try_get_supervisor(){
-                    Some(broker) => broker.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) }).expect("Expected to forward message to broker"),
+                    Some(broker) => broker.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) })
+                    .expect("Expected to forward message to broker"),
                     None => todo!()
                 }
             }
-            BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                match registration_id {
-                    Some(registration_id) => {
-                                        //check topic exists, validate whether an agent to handle that queue already exists
-                        if let Some(_) = state.topics.get(&registration_id.clone()) {
-                            warn!("client {registration_id} already registered!");
-                            //send ack anyway
-                        } else {
-                            warn!("No agent set to handle topic: {topic}, starting new agent...");    
-                            //TODO: spin up new topic actor if topic doesn't exist?
-                            
-                            match Actor::spawn_linked(Some(topic.clone()), TopicAgent, (), myself.clone().into()).await {
-                            
-                            Ok((actor, _)) => {
-                                state.topics.insert(topic.clone(), actor.clone());
-                            },
-                            Err(e) => {
-                                tracing::error!("Failed to start actor for topic: {topic}, {e}");
-                                //TOOD: send error message here
-                                match myself.try_get_supervisor() {
-                                    Some(broker) => broker.send_message(BrokerMessage::ErrorMessage{ client_id: registration_id.clone(), error: e.to_string()}).unwrap(),
-                                    None => todo!()
-                                }
-                            }
-                            }
-                        }
-                            
-                    }, None => {
-                        warn!("Received subscribe request for no session")
-                    }
-                }
+            BrokerMessage::AddTopic {reply, registration_id, topic } => {
+                // add some topic
+                if let Some(registration_id) = registration_id {
+                    let subscribers = vec![format!("{}:{}", registration_id.clone(), topic.clone())];
+                    
+                    match Actor::spawn_linked(Some(
+                        topic.clone()),
+                        TopicAgent,
+                        TopicAgentArgs{ subscribers: Some(subscribers) },
+                        myself.clone().into()).await {
+                            Ok(_) => reply.send(Ok(())).expect("{BROKER_NOT_FOUND_TXT}"),
+                            Err(e) => reply.send(Err(format!("{BROKER_NOT_FOUND_TXT}: {e}"))).expect("{BROKER_NOT_FOUND_TXT}")
+                        }                     
+                } else { warn!("{TOPIC_ADD_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}") }
             }
             _ => warn!(UNEXPECTED_MESSAGE_STR)
         }
@@ -174,6 +164,11 @@ struct TopicAgentState {
     queue: VecDeque<String>
 }
 
+pub struct TopicAgentArgs {
+    /// Mapping of subscribers to 
+    pub subscribers: Option<Vec<String>>
+}
+
 
 #[async_trait]
 impl Actor for TopicAgent {
@@ -185,13 +180,13 @@ impl Actor for TopicAgent {
     type State = TopicAgentState;
 
     #[doc = " Initialization arguments"]
-    type Arguments = ();
+    type Arguments = TopicAgentArgs;
 
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: ()
+        _: TopicAgentArgs
     ) -> Result<Self::State, ActorProcessingErr> {
 
         let state: TopicAgentState  = TopicAgentState { queue: VecDeque::new()};

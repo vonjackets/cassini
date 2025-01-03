@@ -8,7 +8,7 @@ use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, Supervisio
 use async_trait::async_trait;
 
 
-use crate::{BrokerMessage, ClientMessage, BROKER_NAME};
+use crate::{BrokerMessage, ClientMessage, BROKER_NAME, SESSION_MISSING_REASON_STR};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -380,13 +380,39 @@ impl Actor for Listener {
                 //Got request to subscribe from client, confirm we've been registered
                 if registration_id == state.registration_id && registration_id.is_some() {
                     let id = registration_id.unwrap();
-                    where_is(id.clone()).map_or_else(|| { error!("Could not forward request to session")},
-                    |session| {
-                        session.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(id), topic }).expect("Expected to forward message");
-                    });
+                    match where_is(id.clone())   {
+                        Some(session) => {
+                            
+                            session.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(id), topic }).expect("Expected to forward message");
+                            
+                        }
+                        None => {
+                            error!("Could not forward request to session {id:?} ! Closing connection...");
+                            Listener::write(
+                                state.client_id.clone(), 
+                                ClientMessage::SubscribeAcknowledgment {
+                                    topic,
+                                    result: Result::Err("Failed to complete request, session missing".to_string())
+                                }, 
+                                Arc::clone(&state.writer)).await;
+                            myself.stop(Some(SESSION_MISSING_REASON_STR.to_string()));
+    
+                        }
+                    } 
+
                 
                                 
-                } else {warn!("Received request from unregistered client!!"); }
+                } else {
+                    warn!("Received bad request, session_id incorrect or not present");
+                    //error back to client
+                    Listener::write(
+                        state.client_id.clone(), 
+                        ClientMessage::SubscribeAcknowledgment {
+                            topic,
+                            result: Result::Err("Bad request, session_id incorrect or not present".to_string())
+                        }, 
+                        Arc::clone(&state.writer)).await;
+                }
                
             },
             BrokerMessage::UnsubscribeRequest { registration_id,topic } => {

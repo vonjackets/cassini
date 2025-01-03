@@ -285,9 +285,12 @@ impl Actor for SessionAgent {
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 //Forward to listener
                 state.client_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("expected to forward to listener");
+                // TODO: Send message reply back to subscriber via rpc if we fail to forward it to the listener here consider using call_and_forward
+                // The subscriber would make a call to the session and await a reply, if no reply is given, or some error is pushed back, it can store messages in a DLQ
+                // If the message is successfully sent, it forwards that response to the topic agent. 
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
+                state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to broker for session: {registration_id}");
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 state.broker.send_message(BrokerMessage::UnsubscribeRequest { registration_id, topic}).expect("Failed to forward request to subscriber manager for session: {registration_id}");
