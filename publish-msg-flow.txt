@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client
+    participant ListenerManager
+    participant Listener
+    participant Broker
+    participant Session
+    participant TopicManager
+    participant Topic
+    participant Subscriber
+
+    Client->>ListenerManager: Connect
+    ListenerManager->>Listener: Create new listener
+    Listener->>Listener: Wait for registration request
+    Client->>Listener: Send registration request
+    Listener->>Broker: Forward registration request
+    Broker->>Broker: Perform auth
+    alt Auth successful
+        Broker->>Session: Create session
+        Session->>Listener: Send ACK to client
+        Listener->>Client: Forward ACK
+        Client->>Session: Request to subscribe to session
+        Session->>Broker: Forward subscription request
+        Broker->>Broker: Perform auth
+        alt Auth successful
+            Broker->>Broker: Look for existing topic actor
+            alt Topic exists
+                Session->>Topic: Send publish request
+                Topic->>Subscriber: Forward notifications
+                Subscriber->>Session: Send message with payload
+                Session->>Subscriber: Reply to unblock
+                opt Session doesn't reply in time
+                    Subscriber->>Subscriber: Log error
+                    Subscriber->>Subscriber: Stop subscriber
+                end
+                opt Session replies with failure
+                    Subscriber->>Broker: Add to message dead letter queue
+                end
+            else Topic doesn't exist
+                Broker->>TopicManager: Request to create new topic
+                TopicManager-->>Broker: Respond with success or failure
+                alt Topic creation succeeds
+                    Broker->>Topic: Forward publish request
+                    Topic-->>Broker: Success
+                    Broker->>Session: Send PublishAck
+                else Topic creation fails
+                    Broker->>Session: Send error
+                end
+            end
+        else Auth fails
+            Broker->>Session: Send 403 error
+            Session->>Client: Forward 403 error
+        end
+    else Auth fails
+        Broker->>Listener: Send 403 type message
+        Listener->>Client: Forward 403 message
+    end

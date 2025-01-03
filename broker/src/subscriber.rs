@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use ractor::rpc::{call, CallResult};
 
-use ractor::SpawnErr;
 use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::{debug, error, warn};
 
-use crate::{session, BrokerMessage, SESSION_NOT_FOUND_TXT, SUBSCRIBE_REQUEST_FAILED_TXT};
+use crate::{session, PUBLISH_REQ_FAILED_TXT, BrokerMessage, SESSION_NOT_FOUND_TXT, SUBSCRIBE_REQUEST_FAILED_TXT};
 use crate::UNEXPECTED_MESSAGE_STR;
 
 /// Our supervisor for the subscribers
@@ -166,7 +166,7 @@ impl Actor for SubscriberManager {
     async fn handle_supervisor_evt(&self, _: ActorRef<Self::Msg>, msg: SupervisionEvent, _: &mut Self::State) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
-            SupervisionEvent::ActorTerminated(actor_cell,reason, ..) => { debug!("Subscription ended for session {0:?}, {reason:?}", actor_cell.get_name()); }
+            SupervisionEvent::ActorTerminated(actor_cell, _ ,reason) => { debug!("Subscription ended for session {0:?}, {reason:?}", actor_cell.get_name()); }
             SupervisionEvent::ActorFailed(..) => todo!("Subscriber failed unexpectedly, restart subscription and update state"),
             SupervisionEvent::ProcessGroupChanged(..) => (),
         }
@@ -185,6 +185,7 @@ pub struct SubscriberAgent;
 pub struct SubscriberAgentState {
     registration_id: String,
     topic: String,
+    dead_letter_queue: VecDeque<String>,
 }
 
 pub struct SubscriberAgentArgs {
@@ -210,7 +211,8 @@ impl Actor for SubscriberAgent {
             
             Ok(SubscriberAgentState {
                 registration_id: registration_id.to_string(),
-                topic: topic.to_string()
+                topic: topic.to_string(),
+                dead_letter_queue: VecDeque::new()
             })    
         } else { panic!("{SUBSCRIBE_REQUEST_FAILED_TXT}: Bad name given"); }        
     }
@@ -238,18 +240,49 @@ impl Actor for SubscriberAgent {
 
     async fn handle(
         &self,
-        _: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
         match message {
-            BrokerMessage::PublishResponse { topic, payload, result } => {                
+            BrokerMessage::RegistrationResponse { registration_id, client_id, success, error } => {
+                todo!("How to send potentially missed messages to client from DLQ");
+            }
+            BrokerMessage::PublishResponse { topic, payload, .. } => { 
+
                 let id = state.registration_id.clone();
+                let t = topic.clone();
                 tracing::debug!("New message on topic: {topic}, forwarding to session: {id}");
                 if let Some(session) = where_is(id.clone()) {
-                    session.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("{SESSION_NOT_FOUND_TXT}");
+
+                    match call(&session,
+                        |reply| {
+                            BrokerMessage::PushMessage { reply, payload, topic}
+                        }, None)
+                    .await
+                    .expect("Expected to forward message to subscriber") {
+                        CallResult::Success(result) => {
+                            result.map_err(|message| {
+                                //session couldn't talk to listener, add message to DLQ
+                                warn!("{PUBLISH_REQ_FAILED_TXT}: Client not available.");
+                                state.dead_letter_queue.push_back(message);
+                                debug!("{t} queue has {0} message(s) waiting", state.dead_letter_queue.len());
+                            }).unwrap();
+                        },
+                        CallResult::Timeout => {
+                            error!("{PUBLISH_REQ_FAILED_TXT}: Session timed out");
+                            myself.stop(Some("{PUBLISH_REQ_FAILED_TXT}: Session timed out".to_string()));
+                        },
+                        CallResult::SenderError => {
+                            error!("{PUBLISH_REQ_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}");
+                            myself.stop(Some("{PUBLISH_REQ_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}".to_string()));
+                        },
+                    }
+                } else {
+                    error!("{PUBLISH_REQ_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}");
+                    myself.stop(Some("{PUBLISH_REQ_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}".to_string()));
                 }
-                //TODO: Store dead letter queue here in case of failure to send to session
+               
             },
             _ => warn!(UNEXPECTED_MESSAGE_STR)
 

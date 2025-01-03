@@ -350,23 +350,26 @@ impl Actor for Listener {
                     });
                                                     
                 } else {
-                    warn!("Received bad request, session mismatch: {registration_id:?}");
-                    Listener::write(state.client_id.clone(),
-                    ClientMessage::PublishResponse {
-                        topic,
-                        payload,
-                        result: Err("Received request from unknown client! {registration_id:?}".to_string())
-                    },
-                    Arc::clone(&state.writer))
+                    let err_msg = format!("Received bad request, session mismatch: {registration_id:?}");
+                    warn!("{err_msg}");
+                    Listener::write(
+                        state.client_id.clone(),
+                        ClientMessage::ErrorMessage(err_msg),
+                        Arc::clone(&state.writer))
                     .await;
                 }
-            }
+            },
             BrokerMessage::PublishResponse { topic, payload, .. } => {
                 info!("Successfully published message to topic: {topic}");
                 let msg = ClientMessage::PublishResponse { topic: topic.clone(), payload: payload.clone(), result: Result::Ok(()) };  
                 Listener::write(state.client_id.clone(), msg, Arc::clone(&state.writer)).await;            
             },
-
+            BrokerMessage::PublishRequestAck(topic) => {
+                Listener::write(
+                    state.client_id.clone(),
+                    ClientMessage::PublishRequestAck(topic),
+                    Arc::clone(&state.writer)).await;            
+            },
             BrokerMessage::SubscribeAcknowledgment { registration_id, topic, .. } => {
                 debug!("Agent successfully subscribed to topic: {topic}");
                 let response = ClientMessage::SubscribeAcknowledgment {

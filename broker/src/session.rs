@@ -3,7 +3,8 @@ use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRe
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use crate::{BrokerMessage, BROKER_NAME};
+use crate::broker::Broker;
+use crate::{BrokerMessage,CLIENT_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -282,12 +283,25 @@ impl Actor for SessionAgent {
                 //forward to broker
                 state.broker.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).unwrap();
             },
-            BrokerMessage::PublishResponse { topic, payload, result } => {
-                //Forward to listener
-                state.client_ref.send_message(BrokerMessage::PublishResponse { topic, payload, result }).expect("expected to forward to listener");
-                // TODO: Send message reply back to subscriber via rpc if we fail to forward it to the listener here consider using call_and_forward
-                // The subscriber would make a call to the session and await a reply, if no reply is given, or some error is pushed back, it can store messages in a DLQ
-                // If the message is successfully sent, it forwards that response to the topic agent. 
+            BrokerMessage::PushMessage { reply, payload, topic } => {
+                //push to client
+                if let Ok(_) = state.client_ref.send_message(BrokerMessage::PublishResponse { topic, payload: payload.clone(), result: Ok(()) }) {
+                    reply
+                    .send(Ok(()))
+                    .map_err(|e| { warn!("{PUBLISH_REQ_FAILED_TXT}: Subscriber not available: {e}") })
+                    .unwrap();
+                } else {
+                    reply
+                    .send(Err(payload))
+                    .map_err(|e| { warn!("{}", format!("{PUBLISH_REQ_FAILED_TXT}: {CLIENT_NOT_FOUND_TXT}: {e}")) })
+                    .unwrap()
+                }
+            },
+            BrokerMessage::PublishRequestAck(topic) => {
+                state.client_ref.send_message(BrokerMessage::PublishRequestAck(topic)).map_err(|e| {
+                    todo!("What to do if client not present")
+                }).unwrap();
+
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 state.broker.send_message(BrokerMessage::SubscribeRequest { registration_id, topic}).expect("Failed to forward request to broker for session: {registration_id}");

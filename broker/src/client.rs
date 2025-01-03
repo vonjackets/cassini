@@ -125,6 +125,9 @@ impl Actor for TcpClientActor {
                                         warn!("Failed to publish message to topic: {topic}");
                                     }
                                 },
+                                ClientMessage::PublishRequestAck(topic) => {
+                                    debug!("published msg to topic {topic}");
+                                }
 
                                 ClientMessage::SubscribeAcknowledgment { topic, result } => {
                                     if result.is_ok() {

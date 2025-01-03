@@ -1,9 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 
 
+use ractor::registry::where_is;
+use ractor::rpc::call_and_forward;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
-use tracing::{debug, error, warn};
-use crate::{BrokerMessage, SESSION_NOT_FOUND_TXT, BROKER_NOT_FOUND_TXT,};
+use tracing::{debug, error, subscriber, warn};
+use crate::broker::Broker;
+use crate::{BrokerMessage, PUBLISH_REQ_FAILED_TXT};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -135,7 +138,7 @@ impl Actor for TopicManager {
                 }
             }
             BrokerMessage::AddTopic {reply, registration_id, topic } => {
-                // add some topic
+                // add some topic, optionally on behalf of a session
                 if let Some(registration_id) = registration_id {
                     let subscribers = vec![format!("{}:{}", registration_id.clone(), topic.clone())];
                     
@@ -144,10 +147,20 @@ impl Actor for TopicManager {
                         TopicAgent,
                         TopicAgentArgs{ subscribers: Some(subscribers) },
                         myself.clone().into()).await {
-                            Ok(_) => reply.send(Ok(())).expect("{BROKER_NOT_FOUND_TXT}"),
-                            Err(e) => reply.send(Err(format!("{BROKER_NOT_FOUND_TXT}: {e}"))).expect("{BROKER_NOT_FOUND_TXT}")
+                            Ok((actor, _)) => reply.send(Ok(actor.clone())).expect("{BROKER_NOT_FOUND_TXT}"),
+                            Err(e) => reply.send(Err(format!("{TOPIC_ADD_FAILED_TXT}: {e}"))).expect("{BROKER_NOT_FOUND_TXT}")
                         }                     
-                } else { warn!("{TOPIC_ADD_FAILED_TXT}: {SESSION_NOT_FOUND_TXT}") }
+                } else { 
+                    // Just create a new topic agent
+                    match Actor::spawn_linked(Some(
+                        topic.clone()),
+                        TopicAgent,
+                        TopicAgentArgs{ subscribers: None },
+                        myself.clone().into()).await {
+                            Ok((actor,_)) => reply.send(Ok(actor.clone())).expect("{BROKER_NOT_FOUND_TXT}"),
+                            Err(e) => reply.send(Err(format!("{TOPIC_ADD_FAILED_TXT}: {e}"))).expect("{BROKER_NOT_FOUND_TXT}")
+                        }
+                 }
             }
             _ => warn!(UNEXPECTED_MESSAGE_STR)
         }
@@ -161,7 +174,8 @@ impl Actor for TopicManager {
 struct TopicAgent;
 
 struct TopicAgentState {
-    queue: VecDeque<String>
+    subscribers: Vec<String>,
+    queue: VecDeque<String>,
 }
 
 pub struct TopicAgentArgs {
@@ -186,10 +200,12 @@ impl Actor for TopicAgent {
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: TopicAgentArgs
+        args: TopicAgentArgs
     ) -> Result<Self::State, ActorProcessingErr> {
 
-        let state: TopicAgentState  = TopicAgentState { queue: VecDeque::new()};
+        let subscribers = args.subscribers.unwrap_or_default();
+
+        let state: TopicAgentState  = TopicAgentState { queue: VecDeque::new(), subscribers};
         
         debug!("Starting... {myself:?}");
 
@@ -211,18 +227,35 @@ impl Actor for TopicAgent {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
 
-        //TODO: Make way for some message to come in via the broker that tells this actor to update the queue after messages are consumed.
+        
         match message {
             BrokerMessage::PublishRequest{registration_id,topic,payload} => {
                 match registration_id {
                     Some(registration_id) => {
                         debug!("{myself:?}: New message from {0}: {1}", registration_id, payload);
-                        debug!("{topic} queue has {0} message(s) waiting", state.queue.len());
-                        state.queue.push_back(payload.clone());
-                        //send ack
-                        match myself.try_get_supervisor() {
-                            Some(manager) => manager.send_message(BrokerMessage::PublishResponse { topic, payload, result: Result::Ok(()) }).expect(""),
-                            None => todo!()
+                        
+                        //alert subscribers
+                        for subscriber in &state.subscribers {
+                            if let Some(actor) = where_is(subscriber.to_string()) {
+                                actor.send_message(BrokerMessage::PublishResponse {
+                                    topic: topic.clone(),
+                                    payload: payload.clone(),
+                                    result: Ok(())
+                                })
+                                .map_err(|e| {
+                                    warn!("{PUBLISH_REQ_FAILED_TXT}: {e}")
+                                }).unwrap();
+                            } else { warn!("{PUBLISH_REQ_FAILED_TXT}: failed to lookup subscriber for {registration_id}") }
+                        }
+
+                        //send ACK to session that made the request
+                        match where_is(registration_id.clone()) {
+                            Some(session) => {
+                                session.send_message(BrokerMessage::PublishRequestAck(topic))
+                                .map_err(|e| { warn!("Failed to send publish Ack to session! {e}") })
+                                .unwrap();
+                            }
+                            None => warn!("Failed to lookup session {registration_id}")
                         }
                     }, 
                     None => {

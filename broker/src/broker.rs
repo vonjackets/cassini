@@ -1,7 +1,7 @@
 use tracing::{error, info, warn};
 use crate::{get_subsciber_name, listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::SubscriberManager, topic::{TopicManager, TopicManagerArgs}, SUBSCRIBE_REQUEST_FAILED_TXT, UNEXPECTED_MESSAGE_STR};
-use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
-use ractor::{async_trait, registry::where_is, rpc::call_and_forward, Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
+use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME,PUBLISH_REQ_FAILED_TXT, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
+use ractor::{async_trait, registry::where_is, rpc::{call, call_and_forward}, Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -211,14 +211,54 @@ impl Actor for Broker {
                 });
             },
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
-                //send to topic manager
-                match where_is(TOPIC_MANAGER_NAME.to_owned()) {
-                    Some(actor) => {
-                        actor.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).expect("Failed to forward subscribeRequest to topic manager");
-                    },
-                    None => todo!(),
-                }    
-            }
+                //publish to topic, await it's response, forward to subscriber
+                if let Some(registration_id) = registration_id {
+                    match where_is(topic.clone()) {
+                        Some(actor) => {
+                            actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id.clone()), topic, payload })
+                            .map_err(|e| {
+                                warn!("{PUBLISH_REQ_FAILED_TXT}: {e}")
+                            }).unwrap();
+                        },
+                        None => {
+                            // topic doesn't exist
+
+                            if let Some(manager) = where_is(TOPIC_MANAGER_NAME.to_string()) {
+                                let id = registration_id.clone();
+                                let t = topic.clone();
+                                let p = payload.clone();
+                                //tell topicmgr to add one, await it to complete, 
+                                call(&manager, |reply| {
+                                    BrokerMessage::AddTopic { reply, registration_id: Some(id.clone()), topic }
+                                    },
+                                None).await
+                                .expect("{PUBLISH_REQ_FAILED_TXT}: {TOPIC_MGR_NOT_FOUND_TXT}")
+                                .map(|call_result| {
+                                    //forward publish req to topic
+                                    call_result.map(|actor| {
+                                        actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(id), topic: t.clone(), payload: p })
+                                        .map_err(|e| { 
+                                            //Failed to send message to topic
+                                            let err_msg = format!("{PUBLISH_REQ_FAILED_TXT}: {e}");
+                                            warn!("{err_msg}"); 
+                                            where_is(registration_id.clone())
+                                            .map(|session| {
+                                                session.send_message(BrokerMessage::PublishResponse { topic: t, payload, result: Err(err_msg) })
+                                            })
+
+                                        }).unwrap();
+                                    })
+                                    .map_err(|e| {
+                                        //failed to add topic, tell client
+                                        warn!("{e}");
+                                    })
+                                });
+                            }
+                        },
+                    }
+                }
+
+            }// end publish req
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 match where_is(SUBSCRIBER_MANAGER_NAME.to_owned()) {
                     Some(actor) => actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager"),

@@ -1,58 +1,3 @@
-
-client connects, listener created, 
-
-
-client registers
-
-session is created
-
-client sends request to subscribe to session
-
-session forwards req to the broker
-
-broker forwards to sub mgr AND topic mgr
-
-sub mgr creates new subscriber, topic mgr creates new topic - does nothing
-
-sub mgr sends ack to broker
-
-broker forwards ack to session
-
-PUBLISH
-
-client connects, listener created, 
-
-client registers
-
-session is created
-
-client requests publish 
-session forwards request to broker
-    WHAT SHOULD HAPPEN
-        Some auth logic
-
-broker forwards to topicmgr
-(Not a great idea) - creates a bottleneck, we can just forward directly to the topic actor IF it exists
-
-    WHAT SHOULD HAPPEN
-    IF NOT, we should tell the topicmgr to create one, AND THEN publish that message. (Consider abuse case of someone sending a bunch of publishes with random topic names)
-
-
-topicmgr finds the topic - creates an actor if it can't
-forwards the request if it does
-
-
-topic actor gets publish request, adds to queue
-topic actor sends ack to topicmgr
-topicmgr sends to broker
-broker sends to session
-
-
-
-
-
-We're getting rid of the subscriber actors and its manager,
-
 ## Subscription flow
 
 client connects, listener created, 
@@ -88,38 +33,49 @@ Our only other recourse is to just kill the session entirely...not ideal
 
 
 
-NEW Publish flow
+## Publishing Flow
 
-client connects, listener created, 
+client connects
+listener manager creates new listener
+listener waits for registration request
+client sends registration request
+listener forwards registration request to broker
+broker performs some auth
+if auth successful,
+    session is created
+    session sends ACK to client via listener
+    client sends request to subscribe to session
+
+    session forwards to broker
+    broker performs auth
+        if auth successful - broker looks for existing topic actor.
+
+            IF topic exists, 
+                sends publish request to topic
+                If any, topic actor forwards notifications to subscribers
+                subscriber actor will call the session with a message containing
+                the payload
+                session will reply, unblocking the sub
+                if session doesn't reply in time, it's probably dead
+                    log the error, stop subscriber
+                if session replies saying it failed to publish
+                    add to message dead letter queue
 
 
-client registers
+            If no topic exists
+                expect to call topic manager to add a topic, await it's reponse\
 
-session is created
+                if topicmgr succeeds in creating a new topic
+                    if broker succeeds forwarding a publish request to topic 
+                        broker sends PublishAck back to session that made the request
+                    else
+                        send error back to session
 
-client sends request to subscribe to session
+        else, 
+            send 403 error
+else,
+    listener gets 403 type message
 
-session forwards to broker
-broker performs auth
-if auth successful - broker looks for existing topic actor.
-
-    IF topic exists, 
-        sends publish request to topic
-        If any, topic actor forwards notifications to subscribers 
-
-
-    If no topic exists, EXPECT to forward  publish request topicMgr,
-        topic mgr starts new topic, sends publish request to topic
-        topic actor adds message to queue
-        
-        If any, topic actor forwards  notifications to subscribers,
-
-    
-    Topic directly informs session that sent the initial request via an ACK
-
-    subscribers forward notificiation to sessions
-    sessions forward to client via listener    
-ELSE, send 403 error
 
 
 NOTE: We can use RPC to wait for a reply from subscribers and block while we wait for a reply,
