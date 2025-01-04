@@ -233,7 +233,7 @@ impl Actor for SessionAgent {
         
         let client_id = state.client_ref.get_name().unwrap_or_default();
         let registration_id = myself.get_name().unwrap_or_default();
-        info!("Started session {myself:?} for client {client_id}. Contacting");      
+        info!("Started session {myself:?} for client {client_id}. Contacting Listener");      
 
         //send ack to client listener
        state.client_ref.send_message(BrokerMessage::RegistrationResponse { 
