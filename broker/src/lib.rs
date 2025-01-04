@@ -1,4 +1,6 @@
+use ractor::{registry::where_is, ActorRef, RpcReplyPort};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 pub mod topic;
 pub mod listener;
@@ -17,6 +19,16 @@ pub const SUBSCRIBER_MANAGER_NAME: &str = "SUBSCRIBER_MANAGER";
 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
 pub const UNEXPECTED_MESSAGE_STR: &str = "Received unexpected message {message:?}";
+
+pub const SESSION_MISSING_REASON_STR: &str = "SESSION_MISSING";
+pub const SESSION_NOT_FOUND_TXT: &str = "Session not found!";
+pub const CLIENT_NOT_FOUND_TXT: &str = "Listener not found!";
+pub const TOPIC_MGR_NOT_FOUND_TXT: &str = "Topic Manager not found!";
+pub const SUBSCRIBER_MGR_NOT_FOUND_TXT: &str = "Subscription Manager not found!";
+pub const BROKER_NOT_FOUND_TXT: &str = "Broker not found!";
+pub const SUBSCRIBE_REQUEST_FAILED_TXT: &str = "Failed to subscribe to topic: \"{topic}\"";
+pub const PUBLISH_REQ_FAILED_TXT: &str = "Failed to publish message to topic \"{topic\"";
+
 
 /// Internal messagetypes for the Broker.
 /// 
@@ -50,10 +62,23 @@ pub enum BrokerMessage {
         payload: String,
         result: Result<(), String>, // Ok for success, Err with error message
     },
+    PublishRequestAck(String),
+    PublishResponseAck,
     /// Subscribe request from the client.
     // This request originates externally, so a registration_id is not added until it is received by the session
     SubscribeRequest {
         registration_id: Option<String>, //TODO: Remove option
+        topic: String,
+    },
+    AddTopic {
+        reply: RpcReplyPort<Result<ActorRef<BrokerMessage>, String>>,
+        registration_id: Option<String>,
+        topic: String
+        
+    },
+    PushMessage {
+        reply: RpcReplyPort<Result<(), String>>,
+        payload: String,
         topic: String,
     },
     /// Subscribe acknowledgment to the client.
@@ -119,13 +144,9 @@ pub enum ClientMessage {
             registration_id: Option<String>
         },
         /// Publish response to the client.
-        PublishResponse {
-            topic: String,
-            payload: String,
-            result: Result<(), String>, // Ok for success, Err with error message
-        },
-        /// Subscribe request from the client.
-        
+        PublishResponse { topic: String, payload: String, result: Result<(), String> },
+        /// Sent back to actor that made initial publish request
+        PublishRequestAck(String),
         SubscribeRequest {
             registration_id: Option<String>,
             topic: String
@@ -150,7 +171,8 @@ pub enum ClientMessage {
         ///Disconnect, sending a session id to end, if any
         DisconnectRequest(Option<String>),
         ///Mostly for testing purposes, intentional timeout message with a client_id
-        TimeoutMessage(Option<String>)
+        TimeoutMessage(Option<String>),
+        ErrorMessage(String)
 }
 
 impl BrokerMessage {
@@ -228,5 +250,16 @@ pub fn init_logging() {
     tracing::subscriber::set_global_default(subscriber).expect("to set global subscriber");
 }
 
+pub fn get_subsciber_name(registration_id: &str, topic: &str) -> String { format!("{0}:{1}", registration_id, topic) }
 
-
+// pub fn try_get_session(registration_id: String) -> Option<ActorRef<BrokerMessage>> {
+//     match &where_is(registration_id.clone()) {
+//         Some(session) => {
+//             Some(ActorRef::from(session.to_owned()))
+//         }, 
+//         None => {
+//             warn!("Session {registration_id} not found!");
+//             None
+//         }
+//     }
+// }

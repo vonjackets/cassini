@@ -5,7 +5,7 @@ mod tests {
     use core::panic;
     use std::env;
     use cassini::broker::{Broker, BrokerArgs};
-    use cassini::client::{TcpClientActor, TcpClientMessage, TcpClientArgs};
+    use cassini::client::{self, TcpClientActor, TcpClientArgs, TcpClientMessage};
     use ractor::{async_trait, ActorProcessingErr, ActorRef, SupervisionEvent};
     use ractor::{concurrency::Duration, Actor};
     
@@ -158,6 +158,72 @@ mod tests {
         
     }
 
+
+    #[tokio::test]
+    async fn test_client_can_subscribe() {
+        cassini::init_logging();
+        let (supervisor, _) = Actor::spawn(None, MockSupervisor, ()).await.unwrap();
+
+        let broker_supervisor = supervisor.clone();
+        let broker_args = BrokerArgs { bind_addr: String::from(BIND_ADDR), session_timeout: None, server_cert_file: env::var("TLS_SERVER_CERT_CHAIN").unwrap(), private_key_file: env::var("TLS_SERVER_KEY").unwrap(), ca_cert_file: env::var("TLS_CA_CERT").unwrap() };
+        let _ = tokio::spawn(async move {
+            //start supervisor
+            let (_, handle) = Actor::spawn_linked(Some(BROKER_NAME.to_string()), Broker, broker_args, broker_supervisor.clone().into())
+                .await
+                .expect("Failed to start Broker");
+            
+            
+            
+            handle.await.expect("Something went wrong");
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let client_supervisor: ActorRef<()> = supervisor.clone();
+
+        tokio::spawn(async move{
+            let (client, handle) = Actor::spawn_linked(Some("test_client".to_owned()),
+            TcpClientActor,
+            TcpClientArgs {
+                bind_addr: BIND_ADDR.to_string(),
+                registration_id: None,
+                client_cert_file: env::var("TLS_CLIENT_CERT").unwrap(),
+                private_key_file: env::var("TLS_CLIENT_KEY").unwrap(),
+                ca_cert_file: env::var("TLS_CA_CERT").unwrap(),
+
+            },
+            client_supervisor.clone().into()).await.expect("Failed to start client actor");    
+
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::RegistrationRequest { registration_id: None }
+            )).unwrap();
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            
+            let session_id = client
+            .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(2)))
+            .await.unwrap().unwrap();
+
+            assert_ne!(session_id, String::default());
+
+            
+            //create some subscription
+            client.send_message(TcpClientMessage::Send(
+                ClientMessage::SubscribeRequest { 
+                    registration_id: Some(session_id.clone()),
+                    topic: String::from("Apples")
+                }
+            )).unwrap();
+
+            client.kill_after(Duration::from_secs(1)).await.unwrap();
+
+            handle.await.expect("expected to start actor");
+            
+        }).await.expect("Expected client to register successfully");
+
+        
+     
+    }
     #[tokio::test]
     async fn test_registered_client_disconnect() {
         cassini::init_logging();

@@ -1,7 +1,7 @@
-use tracing::{info, warn};
-use crate::{listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::SubscriberManager, topic::{TopicManager, TopicManagerArgs}, UNEXPECTED_MESSAGE_STR};
-use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
-use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use tracing::{error, info, warn};
+use crate::{get_subsciber_name, listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::SubscriberManager, topic::{TopicManager, TopicManagerArgs}, SUBSCRIBE_REQUEST_FAILED_TXT, UNEXPECTED_MESSAGE_STR};
+use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME,PUBLISH_REQ_FAILED_TXT, SUBSCRIBER_MANAGER_NAME, TOPIC_MANAGER_NAME};
+use ractor::{async_trait, registry::where_is, rpc::{call, call_and_forward}, Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -109,13 +109,98 @@ impl Actor for Broker {
                 }
             },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
-                where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
-                match where_is(TOPIC_MANAGER_NAME.to_owned()) {
-                    Some(actor) => {
-                        actor.send_message(BrokerMessage::SubscribeRequest { registration_id, topic }).expect("Failed to forward subscribeRequest to topic manager");
-                    },
-                    None => todo!(),
+                // where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::SubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward subscribeRequest to subscriber manager");
+
+                //Look for existing subscriber actor.
+                
+                if let Some(registration_id) = registration_id {
+                    
+                    match where_is(get_subsciber_name(&registration_id, &topic)) {
+                        Some(_) => {
+                            //Send success message, session already subscribed
+                            match &where_is(registration_id.clone()) {
+                                //session's probably dead for one reason or another if we fail here,
+                                //log and move on
+                                Some(session) => {
+                                    session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id.clone(), topic: topic.clone(), result: Ok(()) })
+                                    .unwrap_or_else(
+                                        |e| {
+                                            warn!("Session {registration_id} not found! {e}!");
+                                        })
+                                }, 
+                                None => warn!("Session {registration_id} not found!")
+                            }
+                        },
+                        None => {
+                            // If no subscriber exists, forward subscribe request topic actor
+                            // forward to topic actor
+                            match where_is(topic.clone()) {
+                                Some(actor) => {
+                                    //forward request
+                                    actor.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.clone()), topic: topic.clone() })
+                                    .unwrap_or_else(|e| {
+                                        todo!("What to do if broker can't find the topic actor when subscribing?")
+                                        //TODO:What to do if broker can't find the topic actor when subscribing?
+                                        // if we "find" the topic actor, but fail to send it a message
+                                        // it's possible it either panicked or was killed sometime between the lookup and the send
+                                        // We can either outright fail to subscribe in this case and alert the client,
+                                        // OR we can start a new topic over again?
+                                        
+
+                                        //couldn't send a message to the topic actor, let know
+                                        // warn!("Failed to subscribe client to topic \"{topic}\". Topic not found!")
+                                        // match &where_is(registration_id.clone()) {
+                                        //     Some(session) => {
+                                        //         session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id: registration_id.clone(), topic: topic.clone(), result: Ok(()) })
+                                        //         .unwrap_or_else(
+                                        //             |e| {
+                                        //                 warn!("Failed to subscribe client to topic \"{topic}\". {e}!");
+                                        //             })
+                                        //     }, 
+                                        //     None => warn!("Failed to subscribe client to topic \"{topic}\". Session not found!")
+                                        // }
+
+                                        
+                                    })
+                                },
+                                None => {
+                                    //no topic actor exists, tell manager to make one
+                                    let topic_mgr = where_is(TOPIC_MANAGER_NAME.to_owned());
+                                    let sub_mgr = where_is(SUBSCRIBER_MANAGER_NAME.to_owned());
+
+                                    let t = topic.clone();
+                                    let id = registration_id.clone();
+
+                                    if topic_mgr.is_some() && sub_mgr.is_some() {
+                                        let _ = call_and_forward(&topic_mgr.unwrap(),
+                                        |reply| {
+                                            BrokerMessage::AddTopic { reply, registration_id: Some(id), topic: t }
+                                        },
+                                        sub_mgr.unwrap(),
+                                        move |result| {
+                                            result.map_or_else(|e| {
+                                                //failed
+                                                // send error to client
+                                                todo!("send error to client")
+                                            }, |_| {
+                                                //succeeded, forward to sub manager
+                                                BrokerMessage::SubscribeRequest { registration_id: Some(registration_id), topic}
+                                            })
+                                        },
+                                        None) //TODO: Set timeouut?
+                                        .map_err(|e| {
+                                            error!("{}", format!("{SUBSCRIBE_REQUEST_FAILED_TXT}: {e}"));
+                                        })
+                                        .unwrap().await;
+                                    } else {
+                                        error!("{}", format!("{SUBSCRIBE_REQUEST_FAILED_TXT}: Failed to locate one or more managers!"));
+                                    }
+                                },
+                            }
+                        },
+                    }
                 }
+
             },
             BrokerMessage::UnsubscribeRequest { registration_id, topic } => {
                 where_is(SUBSCRIBER_MANAGER_NAME.to_owned()).unwrap().send_message(BrokerMessage::UnsubscribeRequest { registration_id: registration_id.clone(), topic: topic.clone() }).expect("Failed to forward request to subscriber manager");
@@ -126,15 +211,54 @@ impl Actor for Broker {
                 });
             },
             BrokerMessage::PublishRequest { registration_id, topic, payload } => {
-                //send to topic manager
-                match where_is(TOPIC_MANAGER_NAME.to_owned()) {
-                    Some(actor) => {
-                        actor.send_message(BrokerMessage::PublishRequest { registration_id, topic, payload }).expect("Failed to forward subscribeRequest to topic manager");
-                    },
-                    None => todo!(),
+                //publish to topic, await it's response, forward to subscriber
+                if let Some(registration_id) = registration_id {
+                    match where_is(topic.clone()) {
+                        Some(actor) => {
+                            actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(registration_id.clone()), topic, payload })
+                            .map_err(|e| {
+                                warn!("{PUBLISH_REQ_FAILED_TXT}: {e}")
+                            }).unwrap();
+                        },
+                        None => {
+                            // topic doesn't exist
+
+                            if let Some(manager) = where_is(TOPIC_MANAGER_NAME.to_string()) {
+                                let id = registration_id.clone();
+                                let t = topic.clone();
+                                let p = payload.clone();
+                                //tell topicmgr to add one, await it to complete, 
+                                call(&manager, |reply| {
+                                    BrokerMessage::AddTopic { reply, registration_id: Some(id.clone()), topic }
+                                    },
+                                None).await
+                                .expect("{PUBLISH_REQ_FAILED_TXT}: {TOPIC_MGR_NOT_FOUND_TXT}")
+                                .map(|call_result| {
+                                    //forward publish req to topic
+                                    call_result.map(|actor| {
+                                        actor.send_message(BrokerMessage::PublishRequest { registration_id: Some(id), topic: t.clone(), payload: p })
+                                        .map_err(|e| { 
+                                            //Failed to send message to topic
+                                            let err_msg = format!("{PUBLISH_REQ_FAILED_TXT}: {e}");
+                                            warn!("{err_msg}"); 
+                                            where_is(registration_id.clone())
+                                            .map(|session| {
+                                                session.send_message(BrokerMessage::PublishResponse { topic: t, payload, result: Err(err_msg) })
+                                            })
+
+                                        }).unwrap();
+                                    })
+                                    .map_err(|e| {
+                                        //failed to add topic, tell client
+                                        warn!("{e}");
+                                    })
+                                });
+                            }
+                        },
+                    }
                 }
-                
-            }
+
+            }// end publish req
             BrokerMessage::PublishResponse { topic, payload, result } => {
                 match where_is(SUBSCRIBER_MANAGER_NAME.to_owned()) {
                     Some(actor) => actor.send_message(BrokerMessage::PublishResponse {topic, payload, result }).expect("Failed to forward notification to subscriber manager"),
