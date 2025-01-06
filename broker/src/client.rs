@@ -119,7 +119,7 @@ impl Actor for TcpClientActor {
                                                 ClientMessage::PublishResponse { topic, payload, result } => {
                                                     //new message on topic
                                                     if result.is_ok() {
-                                                        debug!("New message on topic {topic}: {payload}");
+                                                        info!("New message on topic {topic}: {payload}");
                                                         //TODO: Forward message to some consumer
                                                     } else {
                                                         warn!("Failed to publish message to topic: {topic}");

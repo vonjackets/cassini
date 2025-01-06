@@ -100,25 +100,6 @@ impl Actor for SubscriberManager {
                     }
                 });
             }
-            BrokerMessage::PublishResponse { topic, payload, result } => {
-                tracing::debug!("New message published on topic: {topic}");
-                //Handle ack, a new message was published, alert all subscribed sessions 
-                match state.subscriptions.get(&topic).to_owned() {
-                    Some(vec) => {
-                        for subscriber in vec {
-                            where_is(subscriber.to_string()).map_or_else(| | {
-                                warn!("Could not find subscriber: {subscriber} for topic: {topic}");
-                            }, |subscriber| {
-                                subscriber.send_message(BrokerMessage::PublishResponse { topic: topic.clone(), payload: payload.clone() , result:result.clone() }).unwrap();
-                            })
-                        }
-                    } None => {
-                        debug!("No subscriptions for topic: {topic}");
-                        //No subscribers for this topic, init new vec
-                        state.subscriptions.insert(topic, Vec::new());
-                    }
-                }
-            },
             BrokerMessage::SubscribeRequest { registration_id, topic } => {
                 match registration_id {
                     Some(registration_id) => {
