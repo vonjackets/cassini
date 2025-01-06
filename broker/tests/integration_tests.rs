@@ -14,8 +14,8 @@ mod tests {
     use cassini::{BrokerMessage, ClientMessage, BROKER_NAME, LISTENER_MANAGER_NAME};
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
-    use tokio::time::timeout;
-    use tracing::info;
+    use tokio::time::{sleep, timeout};
+    use tracing::{debug, info};
     
 
     //Bind to some other port if desired
@@ -25,7 +25,7 @@ mod tests {
     pub const TIMEOUT_ERR_MSG: &str = "Server did not start in time";
     /// Shared Notify instance to signal server readiness
     static SERVER_READY: Notify = Notify::const_new();
-     
+    
     pub struct MockSupervisorState;
     pub struct MockSupervisor;
     
@@ -40,10 +40,10 @@ mod tests {
 
         async fn pre_start(
             &self,
-            _: ActorRef<Self::Msg>,
+            myself: ActorRef<Self::Msg>,
             _: (),
         ) -> Result<Self::State, ActorProcessingErr> {
-
+            debug!("{myself:?} starting");
             Ok(MockSupervisorState)
         }
 
@@ -72,13 +72,6 @@ mod tests {
                 },
                 SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
                     info!("TEST_SUPERVISOR: {0:?}:{1:?} terminated. {reason:?}", actor_cell.get_name(), actor_cell.get_id());
-                    //verify no kids left, stop if so
-                    let workers = myself.get_children();
-                    if workers.is_empty() {
-                        myself.stop(Some("FINISHED".to_string()))
-                    } else {
-                        info!("{}" ,format!("Waiting for {} workers to finish", workers.len()))
-                    }
                 },
                 SupervisionEvent::ActorFailed(actor_cell, _) => {
                     panic!("{}" ,format!("Error: actor {0:?}:{1:?} Should not have failed", actor_cell.get_name(), actor_cell.get_id()));
@@ -336,7 +329,7 @@ mod tests {
 
         let supervisor = where_is(TEST_SUPERVISOR.to_string()).expect("Expected supervisor to be present");
 
-        let (client, _) = Actor::spawn_linked(None,
+        let (client, _) = Actor::spawn_linked(Some("initial_reconnect_client".to_string()),
         TcpClientActor,
         TcpClientArgs {
             bind_addr: BIND_ADDR.to_string(),
@@ -356,7 +349,7 @@ mod tests {
         .call(TcpClientMessage::GetRegistrationId, Some(Duration::from_secs(10)))
         .await.unwrap().unwrap();
 
-        println!("{0:?} registered...", client.get_name());
+        
 
         //subscribe to topic
         let topic = String::from("Apples");
@@ -366,7 +359,7 @@ mod tests {
 
         // wait a moment, then force timeout and kill first client
         tokio::time::sleep(Duration::from_secs(3)).await;
-        println!(" {0:?} subscribed...", client.get_name());
+        
         client.send_message(TcpClientMessage::Send(
             ClientMessage::TimeoutMessage(Some(session_id.clone()))
         )).map_err(|e| { println!("{e}")}).expect("Expected to foward msg");
@@ -519,6 +512,19 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
         new_client.kill_and_wait(None).await.expect("Expected to kill client");
     }
+
+
+
+    // #[tokio::test]
+    // async fn test_teardown() {
+    //     let supervisor = where_is(TEST_SUPERVISOR.to_string()).expect("Expected supervsior to be present");
+    //     while !supervisor.get_children().is_empty() {
+    //         let workers = supervisor.get_children().len();
+    //         println!("Waiting for {workers} worker(s) to finish.");
+    //         sleep(Duration::from_secs(5)).await;
+    //     }
+    //     supervisor.stop(Some("FINISHED".to_string()))
+    // }
 }
 
 

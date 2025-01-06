@@ -10,7 +10,7 @@ use crate::ClientMessage;
 use tokio::sync::Mutex;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 
 /// Messages handled by the TCP client actor
@@ -78,84 +78,98 @@ impl Actor for TcpClientActor {
         info!("{myself:?} started. Connecting to {addr}...");
         let connector = TlsConnector::from(Arc::clone(&state.client_config));
         
-        let tcp_stream = TcpStream::connect(&addr).await.expect("Failed to connect to {addr}");
-        
-        //TODO: establish better "Common Name" for the broker server
-        let domain = ServerName::try_from("polar").expect("invalid DNS name");
-        
-        let tls_stream = connector.connect(domain, tcp_stream).await.expect("Expcted to finish handshake");
-        info!("mTLS connection established. ");
-        let (reader, write_half) = split(tls_stream);
-        
-        let writer = tokio::io::BufWriter::new(write_half);
-        
-        state.reader = Some(reader);
-        state.writer = Some(Arc::new(Mutex::new(writer)));
-     
-        info!("{myself:?} Listening... ");
-        let reader = tokio::io::BufReader::new(state.reader.take().expect("Reader already taken!"));
-
-        
-        //start listening
-        let _ = tokio::spawn(async move {
-            let mut buf = String::new();
-
-            let mut buf_reader = tokio::io::BufReader::new(reader);
-
-                while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
-                    if bytes == 0 { () } else {
-                        if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
-                            debug!("recieved: {msg:?}");
-                            match msg {
-                                ClientMessage::RegistrationResponse { registration_id, success, error } => {
-                                    if success {
-                                        info!("Successfully began session with id: {registration_id}");
-                                        myself.send_message(TcpClientMessage::RegistrationResponse(registration_id)).expect("Could not forward message to {myself:?");
-                                        
-                                    } else {
-                                        warn!("Failed to register session with the server. {error:?}");
+        match TcpStream::connect(&addr).await {
+            Ok(tcp_stream) => {
+                //TODO: establish better "Common Name" for the broker server
+                let domain = ServerName::try_from("polar").expect("invalid DNS name");
+                
+                match connector.connect(domain, tcp_stream).await {                  
+                    Ok(tls_stream) => {
+                        info!("mTLS connection established. ");
+                        let (reader, write_half) = split(tls_stream);
+                        
+                        let writer = tokio::io::BufWriter::new(write_half);
+                        
+                        state.reader = Some(reader);
+                        state.writer = Some(Arc::new(Mutex::new(writer)));
+                        
+                        info!("{myself:?} Listening... ");
+                        let reader = tokio::io::BufReader::new(state.reader.take().expect("Reader already taken!"));
+    
+                        //start listening
+                        let _ = tokio::spawn(async move {
+                            let mut buf = String::new();
+    
+                            let mut buf_reader = tokio::io::BufReader::new(reader);
+    
+                                while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
+                                    if bytes == 0 { () } else {
+                                        if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
+                                            debug!("recieved: {msg:?}");
+                                            match msg {
+                                                ClientMessage::RegistrationResponse { registration_id, success, error } => {
+                                                    if success {
+                                                        info!("Successfully began session with id: {registration_id}");
+                                                        myself.send_message(TcpClientMessage::RegistrationResponse(registration_id)).expect("Could not forward message to {myself:?");
+                                                        
+                                                    } else {
+                                                        warn!("Failed to register session with the server. {error:?}");
+                                                    }
+                                                },
+                                                ClientMessage::PublishResponse { topic, payload, result } => {
+                                                    //new message on topic
+                                                    if result.is_ok() {
+                                                        debug!("New message on topic {topic}: {payload}");
+                                                        //TODO: Forward message to some consumer
+                                                    } else {
+                                                        warn!("Failed to publish message to topic: {topic}");
+                                                    }
+                                                },
+                                                ClientMessage::PublishRequestAck(topic) => {
+                                                    debug!("published msg to topic {topic}");
+                                                }
+    
+                                                ClientMessage::SubscribeAcknowledgment { topic, result } => {
+                                                    if result.is_ok() {
+                                                        debug!("Successfully subscribed to topic: {topic}");
+                                                    } else {
+                                                        warn!("Failed to subscribe to topic: {topic}");
+                                                    }
+                                                },
+    
+                                                ClientMessage::UnsubscribeAcknowledgment { topic, result } => {
+                                                    if result.is_ok() {
+                                                        debug!("Successfully unsubscribed from topic: {topic}");
+                                                    } else {
+                                                        warn!("Failed to unsubscribe from topic: {topic}");
+                                                    }  
+                                                },
+                                                _ => {
+                                                    warn!("Unexpected message {buf}");
+                                                }
+                                            }
+                                        } else {
+                                            //bad data
+                                            warn!("Failed to parse message: {buf}");
+                                        }
                                     }
-                                },
-                                ClientMessage::PublishResponse { topic, payload, result } => {
-                                    //new message on topic
-                                    if result.is_ok() {
-                                        debug!("New message on topic {topic}: {payload}");
-                                        //TODO: Forward message to some consumer
-                                    } else {
-                                        warn!("Failed to publish message to topic: {topic}");
-                                    }
-                                },
-                                ClientMessage::PublishRequestAck(topic) => {
-                                    debug!("published msg to topic {topic}");
-                                }
-
-                                ClientMessage::SubscribeAcknowledgment { topic, result } => {
-                                    if result.is_ok() {
-                                        debug!("Successfully subscribed to topic: {topic}");
-                                    } else {
-                                        warn!("Failed to subscribe to topic: {topic}");
-                                    }
-                                },
-
-                                ClientMessage::UnsubscribeAcknowledgment { topic, result } => {
-                                    if result.is_ok() {
-                                        debug!("Successfully unsubscribed from topic: {topic}");
-                                    } else {
-                                        warn!("Failed to unsubscribe from topic: {topic}");
-                                    }  
-                                },
-                                _ => {
-                                    warn!("Unexpected message {buf}");
-                                }
-                            }
-                        } else {
-                            //bad data
-                            warn!("Failed to parse message: {buf}");
-                        }
+                                    buf.clear(); //empty the buffer
+                                }        
+                        });
                     }
-                    buf.clear(); //empty the buffer
-                }        
-        });
+                    Err(e) => {
+                        error!("Failed to establish mTLS connection! {e}");
+                        myself.stop(Some("Failed to establish mTLS connection! {e}".to_string()));
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to connect to server: {e}");
+                myself.stop(Some("Failed to connect to server: {e}".to_string()));
+                
+            }
+        };
+
             
 
         Ok(())
@@ -167,19 +181,25 @@ impl Actor for TcpClientActor {
     }
     
     async fn handle(&self,
-        _: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,) -> Result<(), ActorProcessingErr> {
         match message {
             TcpClientMessage::Send(broker_msg) => {
                 let str = serde_json::to_string(&broker_msg).unwrap();
                 let msg = format!("{str}\n");
-                debug!("{msg}");
+                debug!("Sending message: {msg}");
                 let unwrapped_writer = state.writer.clone().unwrap();
                 let mut writer = unwrapped_writer.lock().await;        
-                let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
-                //TODO: refactor to handle network disconnect
-                writer.flush().await.expect("Expected buffer to get flushed");
+                if let Err(e) = writer.write(msg.as_bytes()).await {
+                    error!("Failed to flush stream {e}, stopping client");
+                    myself.stop(Some("UNEXPECTED_DISCONNECT".to_string()))
+                }
+                
+                if let Err(e) = writer.flush().await {
+                    error!("Failed to flush stream {e}, stopping client");
+                    myself.stop(Some("UNEXPECTED_DISCONNECT".to_string()))
+                }
             }
             TcpClientMessage::RegistrationResponse(registration_id) => state.registration_id = Some(registration_id),
             TcpClientMessage::GetRegistrationId(reply) => {
