@@ -336,6 +336,7 @@ impl Actor for Broker {
                                             warn!("{err_msg}"); 
                                             where_is(registration_id.clone())
                                             .map(|session| {
+                                                
                                                 session.send_message(BrokerMessage::PublishResponse { topic: t, payload, result: Err(err_msg) })
                                             })
 

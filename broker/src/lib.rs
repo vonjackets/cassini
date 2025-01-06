@@ -17,7 +17,7 @@ pub const TOPIC_MANAGER_NAME: &str = "TOPIC_MANAGER";
 pub const SUBSCRIBER_MANAGER_NAME: &str = "SUBSCRIBER_MANAGER";
 
 pub const ACTOR_STARTUP_MSG: &str =  "Started {myself:?}";
-pub const UNEXPECTED_MESSAGE_STR: &str = "Received unexpected message {message:?}";
+pub const UNEXPECTED_MESSAGE_STR: &str = "Received unexpected message!";
 
 pub const SESSION_MISSING_REASON_STR: &str = "SESSION_MISSING";
 pub const SESSION_NOT_FOUND_TXT: &str = "Session not found!";
