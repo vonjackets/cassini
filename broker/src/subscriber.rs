@@ -262,7 +262,7 @@ impl Actor for SubscriberAgent {
                     match where_is(id.clone()) {
                         Some(session) => {
                             info!("Forwarding missed messages to session: {id}");
-                            for msg in &state.dead_letter_queue.clone() {
+                            while let Some(msg) = &state.dead_letter_queue.pop_front() {
                                 match call(&session,
                                     |reply| {
                                         BrokerMessage::PushMessage { reply, payload: msg.to_string(), topic: state.topic.clone()}
@@ -275,9 +275,6 @@ impl Actor for SubscriberAgent {
                                             warn!("{REGISTRATION_REQ_FAILED_TXT} Session not available.");
                                             state.dead_letter_queue.push_back(message);
                                             debug!("Subscriber: {myself:?} queue has {0} message(s) waiting", state.dead_letter_queue.len());
-                                        } else {
-                                            // pop msg off queue
-                                            state.dead_letter_queue.pop_front();
                                         }
                                     },
                                     CallResult::Timeout => {
