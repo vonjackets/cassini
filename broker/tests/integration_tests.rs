@@ -4,23 +4,20 @@ mod tests {
 
     use core::panic;
     use std::env;
-    use std::sync::{Arc, Once};
     use cassini::broker::{Broker, BrokerArgs};
-    use cassini::client::{self, TcpClientActor, TcpClientArgs, TcpClientMessage};
+    use cassini::client::{TcpClientActor, TcpClientArgs, TcpClientMessage};
     use ractor::registry::where_is;
     use ractor::{async_trait, ActorProcessingErr, ActorRef, SupervisionEvent};
     use ractor::{concurrency::Duration, Actor};
-    
-    use cassini::{BrokerMessage, ClientMessage, BROKER_NAME, LISTENER_MANAGER_NAME};
+    use cassini::{ClientMessage, BROKER_NAME, LISTENER_MANAGER_NAME};
     use tokio::sync::Notify;
-    use tokio::task::JoinHandle;
-    use tokio::time::{sleep, timeout};
+    use tokio::time::timeout;
     use tracing::{debug, info};
     
 
     //Bind to some other port if desired
     pub const BIND_ADDR: &str = "127.0.0.1:8080";
-    pub const EXPECTED_BROKER: &str = "Expected Broker to start";
+    // pub const EXPECTED_BROKER: &str = "Expected Broker to start";
     pub const TEST_SUPERVISOR: &str = "TEST_SUPERVISOR";
     pub const TIMEOUT_ERR_MSG: &str = "Server did not start in time";
     /// Shared Notify instance to signal server readiness
@@ -29,12 +26,9 @@ mod tests {
     pub struct MockSupervisorState;
     pub struct MockSupervisor;
     
-    pub enum MockSuperVisorMessage {
-        Stop(ActorRef<TcpClientMessage>)
-    }
     #[async_trait]
     impl Actor for MockSupervisor {
-        type Msg = MockSuperVisorMessage;
+        type Msg = ();
         type State = MockSupervisorState;
         type Arguments = ();
 
@@ -50,16 +44,10 @@ mod tests {
         async fn handle(
             &self,
             _myself: ActorRef<Self::Msg>,
-            message: Self::Msg,
+            _: Self::Msg,
             _: &mut Self::State,
         ) -> Result<(), ActorProcessingErr> {
             
-            match message {
-                MockSuperVisorMessage::Stop(actor) => {
-                    info!("Stopping {actor:?}");
-                    actor.kill_and_wait(None).await.unwrap()
-                }
-            }
 
             Ok(())
         }

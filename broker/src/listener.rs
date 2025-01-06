@@ -1,6 +1,6 @@
 use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, server::WebPkiClientVerifier, RootCertStore, ServerConfig};
 use serde_json::to_string;
-use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex, task::JoinError};
+use tokio::{io::{split, AsyncBufReadExt, AsyncWriteExt, BufWriter, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{debug, error, info, warn};
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use ractor::{registry::where_is, Actor, ActorProcessingErr, ActorRef, Supervisio
 use async_trait::async_trait;
 
 
-use crate::{BrokerMessage, ClientMessage, BROKER_NAME, BROKER_NOT_FOUND_TXT, DISCONNECTED_REASON, LISTENER_MGR_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT, REGISTRATION_REQ_FAILED_TXT, SESSION_MISSING_REASON_STR, SESSION_NOT_FOUND_TXT, SUBSCRIBE_REQUEST_FAILED_TXT, TIMEOUT_REASON};
+use crate::{BrokerMessage, ClientMessage, BROKER_NAME, BROKER_NOT_FOUND_TXT, LISTENER_MGR_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT, REGISTRATION_REQ_FAILED_TXT, SESSION_MISSING_REASON_STR, SESSION_NOT_FOUND_TXT, SUBSCRIBE_REQUEST_FAILED_TXT, TIMEOUT_REASON};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -316,7 +316,7 @@ impl Actor for Listener {
                                 registration_id,
                                 client_id: client_id.clone()
                             }) {
-                                let err_msg = format!("{REGISTRATION_REQ_FAILED_TXT}: {BROKER_NOT_FOUND_TXT}");
+                                let err_msg = format!("{REGISTRATION_REQ_FAILED_TXT}: {BROKER_NOT_FOUND_TXT}: {e}");
                                 error!("{err_msg}");
                                 if let Ok(msg) = to_string(&ClientMessage::RegistrationResponse{ registration_id: String::default(), success: false,  error: Some(err_msg.clone()) }) {
                                         let _ = Listener::write( client_id, msg, Arc::clone(&state.writer)).await.map_err(|e| { error!("Failed to write message {e}") });
@@ -615,7 +615,7 @@ impl Actor for Listener {
                     
                 
             }
-            BrokerMessage::TimeoutMessage {error, client_id, .. } => {
+            BrokerMessage::TimeoutMessage {error, .. } => {
                 //Client timed out, if we were registered, let session know
                 match &state.registration_id {
                     Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {

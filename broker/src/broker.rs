@@ -1,8 +1,7 @@
-use rustls::client;
 use tracing::{error, info, warn};
 use crate::{get_subsciber_name, listener::{ListenerManager, ListenerManagerArgs}, session::{SessionManager, SessionManagerArgs}, subscriber::SubscriberManager, topic::{TopicManager, TopicManagerArgs}, SUBSCRIBE_REQUEST_FAILED_TXT, UNEXPECTED_MESSAGE_STR};
 use crate::{BrokerMessage, LISTENER_MANAGER_NAME, SESSION_MANAGER_NAME,PUBLISH_REQ_FAILED_TXT, SUBSCRIBER_MANAGER_NAME, SUBSCRIBER_MGR_NOT_FOUND_TXT, TOPIC_MANAGER_NAME,REGISTRATION_REQ_FAILED_TXT, SESSION_NOT_FOUND_TXT, CLIENT_NOT_FOUND_TXT};
-use ractor::{async_trait, registry::where_is, rpc::{call, call_and_forward}, Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
+use ractor::{async_trait, registry::where_is, rpc::{call, call_and_forward}, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 
 
 // ============================== Broker Supervisor Actor Definition ============================== //
@@ -125,19 +124,19 @@ impl Actor for Broker {
                                 if let Some(listener) = where_is(id.clone()) {
                                     listener.send_message(BrokerMessage::RegistrationResponse { registration_id: Some(id.clone()), client_id: id.clone(), success: false, error: Some(err_msg) })
                                     .map_err(|e| {
-                                        warn!("err_msg");
+                                        warn!("{e}");
                                     }).unwrap()
                                 }
                             }
 
                            
                             if let Err(e) = sub_mgr.send_message(BrokerMessage::RegistrationRequest { registration_id: Some(id.clone()), client_id: client_id_clone }){
-                                let err_msg = format!("{REGISTRATION_REQ_FAILED_TXT}: {SUBSCRIBER_MGR_NOT_FOUND_TXT}, messages may have been lost!");
+                                let err_msg = format!("{REGISTRATION_REQ_FAILED_TXT}: {SUBSCRIBER_MGR_NOT_FOUND_TXT}, messages may have been lost! {e}");
                                 error!("{err_msg}");
                                 if let Some(listener) = where_is(id.clone()) {
                                     listener.send_message(BrokerMessage::RegistrationResponse { registration_id: Some(id.clone()), client_id: id.clone(), success: false, error: Some(err_msg) })
                                     .map_err(|e| {
-                                        warn!("err_msg");
+                                        warn!("{e}");
                                     }).unwrap()
                                 }
                             }
@@ -169,7 +168,7 @@ impl Actor for Broker {
                                     if let Some(listener) = where_is(client_id.clone()) {
                                         listener.send_message(BrokerMessage::RegistrationResponse { registration_id: registration_id.clone(), client_id: client_id.clone(), success: false, error: Some(err_msg) })
                                         .map_err(|e| {
-                                            warn!("err_msg");
+                                            warn!("{e}");
                                         }).unwrap()
                                     }
                                     else {
@@ -182,7 +181,7 @@ impl Actor for Broker {
                                 if let Some(listener) = where_is(client_id.clone()) {
                                     listener.send_message(BrokerMessage::RegistrationResponse { registration_id: registration_id.clone(), client_id: client_id.clone(), success: false, error: Some(err_msg) })
                                     .map_err(|e| {
-                                        warn!("err_msg");
+                                        warn!("{e}");
                                     }).unwrap()
                                 }
                                 else {
@@ -231,7 +230,7 @@ impl Actor for Broker {
                                 Some(actor) => {
                                     //forward request
                                     actor.send_message(BrokerMessage::SubscribeRequest { registration_id: Some(registration_id.clone()), topic: topic.clone() })
-                                    .unwrap_or_else(|e| {
+                                    .unwrap_or_else(|_| {
                                         todo!("What to do if broker can't find the topic actor when subscribing?")
                                         //TODO:What to do if broker can't find the topic actor when subscribing?
                                         // if we "find" the topic actor, but fail to send it a message

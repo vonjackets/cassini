@@ -1,13 +1,8 @@
-use std::collections::{HashMap, VecDeque};
-
-
+use std::collections::HashMap;
 use ractor::registry::where_is;
-use ractor::rpc::call_and_forward;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
-use tracing::{debug, error, subscriber, warn};
-use crate::broker::Broker;
+use tracing::{debug, error, warn};
 use crate::{BrokerMessage, PUBLISH_REQ_FAILED_TXT, SUBSCRIBE_REQUEST_FAILED_TXT};
-
 use crate::UNEXPECTED_MESSAGE_STR;
 
 pub const TOPIC_ADD_FAILED_TXT: &str = "Failed to add topic \"{topic}!\"";
@@ -175,7 +170,6 @@ struct TopicAgent;
 
 struct TopicAgentState {
     subscribers: Vec<String>,
-    queue: VecDeque<String>,
 }
 
 pub struct TopicAgentArgs {
@@ -205,7 +199,7 @@ impl Actor for TopicAgent {
 
         let subscribers = args.subscribers.unwrap_or_default();
 
-        let state: TopicAgentState  = TopicAgentState { queue: VecDeque::new(), subscribers};
+        let state: TopicAgentState  = TopicAgentState {subscribers};
         
         debug!("Starting... {myself:?}");
 

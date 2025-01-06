@@ -3,9 +3,7 @@ use ractor::{async_trait, registry::where_is, Actor, ActorProcessingErr, ActorRe
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use crate::broker::Broker;
 use crate::{BrokerMessage,CLIENT_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT, TIMEOUT_REASON};
-
 use crate::UNEXPECTED_MESSAGE_STR;
 
 /// The manager process for our concept of client sessions.
@@ -247,13 +245,14 @@ impl Actor for SessionAgent {
 
     }
 
-
+    // TODO: Harden, don't expect message forwarding to always succeed, treat as a timeout if we can't forward to listener
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr>  {
+        
         match message {
             BrokerMessage::RegistrationRequest { registration_id, client_id, .. } => {
                 //A a new connection has been established, update state to send messages to new listener actor
