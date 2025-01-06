@@ -281,19 +281,6 @@ impl Actor for Listener {
     }
 
     async fn post_stop(&self, myself: ActorRef<Self::Msg>, state: &mut Self::State) -> Result<(), ActorProcessingErr> {
-        
-        //Client probably timed out, if we were registered, let session know
-        
-        match &state.registration_id {
-            Some(id) => where_is(id.to_owned()).map_or_else(|| {}, |session| {
-                warn!("client {0:?} disconnected unexpectedly!", myself.get_name());
-                session.send_message(BrokerMessage::TimeoutMessage { client_id: myself.get_name().unwrap(), registration_id: Some(id.clone()), error: Some("Timedout".to_string()) })
-                .map_err(|e| {
-                    warn!("{SESSION_NOT_FOUND_TXT}: {id}: {e}");
-                }).unwrap();
-                }),
-            _ => ()
-        }
         debug!("Successfully stopped {myself:?}");
 
         Ok(())
