@@ -105,7 +105,7 @@ impl Actor for TcpClientActor {
                 while let Ok(bytes) = buf_reader.read_line(&mut buf).await {                
                     if bytes == 0 { () } else {
                         if let Ok(msg) = serde_json::from_slice::<ClientMessage>(buf.as_bytes()) {
-                            
+                            debug!("recieved: {msg:?}");
                             match msg {
                                 ClientMessage::RegistrationResponse { registration_id, success, error } => {
                                     if success {
@@ -178,7 +178,7 @@ impl Actor for TcpClientActor {
                 let unwrapped_writer = state.writer.clone().unwrap();
                 let mut writer = unwrapped_writer.lock().await;        
                 let _: usize = writer.write(msg.as_bytes()).await.expect("Expected bytes to be written");
-
+                //TODO: refactor to handle network disconnect
                 writer.flush().await.expect("Expected buffer to get flushed");
             }
             TcpClientMessage::RegistrationResponse(registration_id) => state.registration_id = Some(registration_id),

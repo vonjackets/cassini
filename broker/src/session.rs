@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use crate::broker::Broker;
-use crate::{BrokerMessage,CLIENT_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT};
+use crate::{BrokerMessage,CLIENT_NOT_FOUND_TXT, PUBLISH_REQ_FAILED_TXT, TIMEOUT_REASON};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -173,7 +173,7 @@ impl Actor for SessionManager {
     
                                         None => warn!("Could not find broker supervisor!")
                                     }
-                                    ref_clone.stop(Some("TIMEDOUT".to_string()));
+                                    ref_clone.stop(Some(TIMEOUT_REASON.to_string()));
                                 
                                 }
                             }
@@ -331,7 +331,7 @@ impl Actor for SessionAgent {
                 }
             }
             _ => {
-                warn!(UNEXPECTED_MESSAGE_STR);
+                warn!("{}",format!("{UNEXPECTED_MESSAGE_STR}: {message:?}"));
             }
         }
     

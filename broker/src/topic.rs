@@ -6,7 +6,7 @@ use ractor::rpc::call_and_forward;
 use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef};
 use tracing::{debug, error, subscriber, warn};
 use crate::broker::Broker;
-use crate::{BrokerMessage, PUBLISH_REQ_FAILED_TXT};
+use crate::{BrokerMessage, PUBLISH_REQ_FAILED_TXT, SUBSCRIBE_REQUEST_FAILED_TXT};
 
 use crate::UNEXPECTED_MESSAGE_STR;
 
@@ -264,8 +264,24 @@ impl Actor for TopicAgent {
                     }
                 }
             }
+            BrokerMessage::SubscribeRequest { registration_id, topic } => {
+                if let Some(registration_id) = registration_id {
+                    
+                    match where_is(registration_id.clone()) {
+                        Some(session) => {
+                            state.subscribers.push(registration_id.clone());
+                            //send ack
+                            if let Err(e) = session.send_message(BrokerMessage::SubscribeAcknowledgment { registration_id, topic, result: Ok(()) }) {
+                                warn!("{SUBSCRIBE_REQUEST_FAILED_TXT}: {e}");
+                            }
+                            
+                        },
+                        None => todo!()
+                    }
+                }
+        }
             _ => {
-                todo!()
+                warn!("{}", format!("{UNEXPECTED_MESSAGE_STR}: {message:?}"))
             }
         }
         Ok(())
