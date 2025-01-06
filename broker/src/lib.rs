@@ -1,6 +1,5 @@
-use ractor::{registry::where_is, ActorRef, RpcReplyPort};
+use ractor::{ActorRef, RpcReplyPort};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 pub mod topic;
 pub mod listener;
@@ -27,9 +26,11 @@ pub const TOPIC_MGR_NOT_FOUND_TXT: &str = "Topic Manager not found!";
 pub const SUBSCRIBER_MGR_NOT_FOUND_TXT: &str = "Subscription Manager not found!";
 pub const BROKER_NOT_FOUND_TXT: &str = "Broker not found!";
 pub const SUBSCRIBE_REQUEST_FAILED_TXT: &str = "Failed to subscribe to topic: \"{topic}\"";
-pub const PUBLISH_REQ_FAILED_TXT: &str = "Failed to publish message to topic \"{topic\"";
-
-
+pub const PUBLISH_REQ_FAILED_TXT: &str = "Failed to publish message to topic \"{topic}\"";
+pub const REGISTRATION_REQ_FAILED_TXT: &str = "Failed to register session!";
+pub const LISTENER_MGR_NOT_FOUND_TXT: & str = "Listener Manager not found!";
+pub const TIMEOUT_REASON: &str = "SESSION_TIMEDOUT";
+pub const DISCONNECTED_REASON: &str = "CLIENT_DISCONNECTED";
 /// Internal messagetypes for the Broker.
 /// 
 #[derive(Debug)]

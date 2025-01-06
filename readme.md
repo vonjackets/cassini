@@ -31,14 +31,14 @@ The goal of the project is to provide a reliable, scalable, and secure messaging
 ## Architecture
 
 ### Message Broker
-**Supervisor** The central supervisor process that primarily manages the lifecycle of its more productive managers.
-**Listener Manager**: The process that listens for incoming connections on a configured address and port. In cooperation with the session manager, it manages the lifecycle events of connected clients by spinning up additional *listeners*.
+- **Supervisor** The central supervisor process that primarily manages the lifecycle of its more productive managers.
+- **Listener Manager**: The process that listens for incoming connections on a configured address and port. In cooperation with the session manager, it manages the lifecycle events of connected clients by spinning up additional *listeners*.
     - *Listeners* are actors that maintain the actual TLS secured client connections, they forward and respond to incoming messages, and live and die by the TCP connection they maintain.
-**Session Manager**: This supervisor manages connected client *sessions* and is responsible for "registering" authenticated clients and cleaning up after them when they disconnect, intentionally or otherwise
+- **Session Manager**: This supervisor manages connected client *sessions* and is responsible for "registering" authenticated clients and cleaning up after them when they disconnect, intentionally or otherwise
     - *Sessions* are actors primarily responsible for communicating with all other actors in the architecture and storing additional metadata about the client connection. When a client is registered, all messages go through these actors.
-**Subscriber Manager**: As its name suggests, this supervisor is responsible for managing subscription actors that represent all connected client subscriptions to a particular *topic*
+- **Subscriber Manager**: As its name suggests, this supervisor is responsible for managing subscription actors that represent all connected client subscriptions to a particular *topic*
     - *Subscribers* are actors that represent a client's subscriptions. They are responsible for actually forwarding new messages published to the session they're resposible for.
-**Topic Manager**: This supervisor manages the actual topics the clients wish to publish messages to and read from. 
+- **Topic Manager**: This supervisor manages the actual topics the clients wish to publish messages to and read from. 
     - *Topic* actors are responsible for managing the actual message queues for individual topics.
 
 
