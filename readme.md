@@ -1,3 +1,4 @@
+**NOTE:** Development of the message broker has moved to the [Polar repository](https://github.com/cmu-sei/Polar)
 # Cassini
 
 Polar's resilient message broker
